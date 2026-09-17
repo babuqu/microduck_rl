@@ -636,6 +636,11 @@ def make_microduck_velocity_env_cfg(
         )
 
     # 观测 (Observations)
+    #del Python 的字典删除语句，把这个 key 从 terms 里彻底移除  名
+    # 为 actor 的观测组 —— 这是策略（Actor）网络实际能看到的观测（
+    # 通常带噪声、模拟真实传感器）
+    #其中名为 base_lin_vel 的观测项，即 base linear velocity，
+    #机器人基座（躯干）在世界坐标系下的线速度​
     del cfg.observations["actor"].terms["base_lin_vel"]
     # mjlab 1.3.0 默认给 actor/critic 两组都加 height_scan 项（地形射线扫描）。
     # microduck 没有装这种机身地形传感器，两组都删掉（对齐 microban）。
@@ -648,7 +653,7 @@ def make_microduck_velocity_env_cfg(
     # 仅把 base_lin_vel 加给 critic（特权信息）
     # (Add base_lin_vel to critic only (privileged information))
     cfg.observations["critic"].terms["base_lin_vel"] = ObservationTermCfg(
-        func=mdp.base_lin_vel,
+        func=mdp.base_lin_vel,#机器人基座（躯干）在世界坐标系下的线速度​
         scale=1.0,
     )
 
@@ -666,7 +671,7 @@ def make_microduck_velocity_env_cfg(
             func=microduck_mdp.raw_accelerometer,
             scale=1.0,
         )
-
+    # 对 actor 组中的 projected_gravity 观测项做深拷贝，避免与其他组/配置共享引用
     cfg.observations["actor"].terms[gravity_term_name] = deepcopy(
         cfg.observations["actor"].terms[gravity_term_name]
     )
