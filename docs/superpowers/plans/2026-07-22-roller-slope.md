@@ -1,45 +1,45 @@
-# Mode pente `roller_slope` — Implementation Plan
+# `roller_slope` 坡度模式 — 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向 agentic worker：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐项实施本计划。步骤使用复选框（`- [ ]`）语法进行追踪。
 
-**Goal:** Entraîner une politique dédiée où microduck (rollers) démarre sur du plat avec une impulsion, roule sur une rampe descendante, et se laisse glisser jusqu'en bas en restant debout — sans aucun pilotage.
+**目标：** 训练一个专用策略，让 microduck（轮子版）在平地上以一个冲量启动，滚向下行斜坡，并保持直立被动滑行至坡底 — 无需任何主动操控。
 
-**Architecture:** Nouvelle tâche isolée clonée de `velocity_rollers` (même robot, même obs 61D → interchangeable au runtime). Terrain custom « plat + rampe » à angle interpolé par difficulté, curriculum de raideur maison, commande neutralisée, récompenses d'équilibre + posture debout nominale. Bouton `Y` de bascule dans `infer_policy.py`.
+**架构：** 从 `velocity_rollers` 克隆的独立新任务（相同机器人、相同 61D obs → 运行时可互换）。自定义地形「平地 + 斜坡」，坡度按难度插值，自制坡度 curriculum，命令归零，平衡 + 名义直立姿态奖励。在 `infer_policy.py` 中加入 `Y` 键切换。
 
-**Tech Stack:** Python, mjlab 1.3.x, MuJoCo (MjSpec terrains), rsl_rl (PPO), PyTorch, onnxruntime (déploiement), pytest.
+**技术栈：** Python、mjlab 1.3.x、MuJoCo（MjSpec 地形）、rsl_rl（PPO）、PyTorch、onnxruntime（部署）、pytest。
 
-## Global Constraints
+## 全局约束
 
-- **Observation unifiée 61D** : twist (3D) + head_command (4D) + body_command (6D) en zéro-padding. Ne jamais changer ce layout — la politique doit charger via `--new-cmd-obs`.
-- **Résolution des joints par NOM**, jamais par index (roues passives intercalées).
-- **Vitesse d'entrée via `reset_root_state_uniform` (velocity_range)**, JAMAIS via `push_by_setting_velocity` en mode reset (accumule sur l'état racine → free-joint diverge → NaN). Leçon `roller_crouch`.
-- **Angles en radians** dans le code physique ; les constantes de raideur sont exprimées en degrés (`RAMP_DEG_MIN=2.0`, `RAMP_DEG_MAX=20.0`) et converties.
-- **Commits simples**, style du dépôt (pas de `Co-authored-by`).
-- Tests dans `tests/`, lancés avec `uv run pytest`.
-
----
-
-## File Structure
-
-- **Create** `src/mjlab_microduck/tasks/slope_terrain.py` — `ramp_angle_by_difficulty()` + `FlatRampTerrainCfg` (géométrie du terrain plat+rampe). Responsabilité unique : le terrain.
-- **Modify** `src/mjlab_microduck/tasks/mdp.py` — ajouter `slope_move_masks()` (pur) + `terrain_levels_slope()` (curriculum de raideur).
-- **Create** `src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py` — `make_microduck_roller_slope_env_cfg()` + `MicroduckRollerSlopeRlCfg`.
-- **Modify** `src/mjlab_microduck/tasks/__init__.py` — enregistrer la tâche.
-- **Modify** `scripts/infer_policy.py` — flag `--slope` + touche `Y`.
-- **Create** `tests/test_slope_terrain.py`, `tests/test_slope_curriculum.py`, `tests/test_roller_slope_cfg.py`.
+- **统一 61D 观测**：twist (3D) + head_command (4D) + body_command (6D) 零填充。永远不要修改该布局 — 策略必须能通过 `--new-cmd-obs` 加载。
+- **按名称解析关节**，绝不按索引（被动轮关节交错排列）。
+- **入口速度通过 `reset_root_state_uniform`（velocity_range）设置**，绝不在 reset 模式下用 `push_by_setting_velocity`（会在根状态上累积 → free-joint 发散 → NaN）。`roller_crouch` 的教训。
+- **物理代码中使用弧度**；坡度常量以度数表示（`RAMP_DEG_MIN=2.0`、`RAMP_DEG_MAX=20.0`）并做转换。
+- **简洁提交**，遵循仓库风格（不加 `Co-authored-by`）。
+- 测试位于 `tests/`，使用 `uv run pytest` 运行。
 
 ---
 
-## Task 1 : angle de rampe par difficulté (fonction pure)
+## 文件结构
 
-**Files:**
-- Create: `src/mjlab_microduck/tasks/slope_terrain.py`
-- Test: `tests/test_slope_terrain.py`
+- **新建** `src/mjlab_microduck/tasks/slope_terrain.py` — `ramp_angle_by_difficulty()` + `FlatRampTerrainCfg`（平地+斜坡地形几何）。单一职责：地形。
+- **修改** `src/mjlab_microduck/tasks/mdp.py` — 添加 `slope_move_masks()`（纯函数）+ `terrain_levels_slope()`（坡度 curriculum）。
+- **新建** `src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py` — `make_microduck_roller_slope_env_cfg()` + `MicroduckRollerSlopeRlCfg`。
+- **修改** `src/mjlab_microduck/tasks/__init__.py` — 注册任务。
+- **修改** `scripts/infer_policy.py` — `--slope` 标志 + `Y` 键。
+- **新建** `tests/test_slope_terrain.py`、`tests/test_slope_curriculum.py`、`tests/test_roller_slope_cfg.py`。
 
-**Interfaces:**
-- Produces: `ramp_angle_by_difficulty(difficulty: float, deg_min: float = 2.0, deg_max: float = 20.0) -> float` (retourne des **radians**). Constantes module `RAMP_DEG_MIN = 2.0`, `RAMP_DEG_MAX = 20.0`.
+---
 
-- [ ] **Step 1: Écrire le test qui échoue**
+## 任务 1：按难度计算斜坡角度（纯函数）
+
+**文件：**
+- 新建：`src/mjlab_microduck/tasks/slope_terrain.py`
+- 测试：`tests/test_slope_terrain.py`
+
+**接口：**
+- 产出：`ramp_angle_by_difficulty(difficulty: float, deg_min: float = 2.0, deg_max: float = 20.0) -> float`（返回**弧度**）。模块常量 `RAMP_DEG_MIN = 2.0`、`RAMP_DEG_MAX = 20.0`。
+
+- [ ] **步骤 1：编写失败测试**
 
 ```python
 # tests/test_slope_terrain.py
@@ -66,12 +66,12 @@ def test_ramp_angle_clamps_out_of_range():
     assert math.isclose(ramp_angle_by_difficulty(2.0), math.radians(RAMP_DEG_MAX), abs_tol=1e-9)
 ```
 
-- [ ] **Step 2: Lancer le test — il doit échouer**
+- [ ] **步骤 2：运行测试 — 必须失败**
 
-Run: `uv run pytest tests/test_slope_terrain.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'mjlab_microduck.tasks.slope_terrain'`
+运行：`uv run pytest tests/test_slope_terrain.py -v`
+预期：FAIL — `ModuleNotFoundError: No module named 'mjlab_microduck.tasks.slope_terrain'`
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **步骤 3：最小实现**
 
 ```python
 # src/mjlab_microduck/tasks/slope_terrain.py
@@ -100,12 +100,12 @@ def ramp_angle_by_difficulty(
     return math.radians(deg_min + d * (deg_max - deg_min))
 ```
 
-- [ ] **Step 4: Lancer le test — il doit passer**
+- [ ] **步骤 4：运行测试 — 必须通过**
 
-Run: `uv run pytest tests/test_slope_terrain.py -v`
-Expected: PASS (3 tests)
+运行：`uv run pytest tests/test_slope_terrain.py -v`
+预期：PASS（3 个测试）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add src/mjlab_microduck/tasks/slope_terrain.py tests/test_slope_terrain.py
@@ -114,19 +114,19 @@ git commit -m "roller-slope: angle de rampe par difficulte (fonction pure + test
 
 ---
 
-## Task 2 : terrain custom `FlatRampTerrainCfg`
+## 任务 2：自定义地形 `FlatRampTerrainCfg`
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/slope_terrain.py`
-- Test: `tests/test_slope_terrain.py`
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/slope_terrain.py`
+- 测试：`tests/test_slope_terrain.py`
 
-**Interfaces:**
-- Consumes: `ramp_angle_by_difficulty` (Task 1), `SubTerrainCfg`, `TerrainGeometry`, `TerrainOutput` de `mjlab.terrains.terrain_generator`.
-- Produces: `FlatRampTerrainCfg(SubTerrainCfg)` avec champs `flat_length: float = 2.0`, `ramp_length: float = 5.0`, `deg_min: float = 2.0`, `deg_max: float = 20.0`, `thickness: float = 0.5` ; méthode `function(difficulty, spec, rng) -> TerrainOutput`. L'origine de spawn est sur le plat.
+**接口：**
+- 消费：`ramp_angle_by_difficulty`（任务 1）、`SubTerrainCfg`、`TerrainGeometry`、`TerrainOutput`（来自 `mjlab.terrains.terrain_generator`）。
+- 产出：`FlatRampTerrainCfg(SubTerrainCfg)`，含字段 `flat_length: float = 2.0`、`ramp_length: float = 5.0`、`deg_min: float = 2.0`、`deg_max: float = 20.0`、`thickness: float = 0.5`；方法 `function(difficulty, spec, rng) -> TerrainOutput`。spawn 原点位于平地。
 
-**Notes géométrie (à retenir) :** la surface du plat est à `z=0` local. La rampe est un box tourné autour de `+y` par un quaternion `[cos(a/2), 0, sin(a/2), 0]` — une rotation `+a` autour de `+y` abaisse le bord `+x` (la rampe descend quand `x` augmente). L'assemblage exact plat/rampe (pas de marche, pas de trou) **doit être vérifié dans le viewer** (Step 6) car le `z` du centre de la rampe est sensible.
+**几何要点（务必牢记）：** 平地表面位于局部 `z=0`。斜坡是一个绕 `+y` 旋转四元数 `[cos(a/2), 0, sin(a/2), 0]` 的 box — 绕 `+y` 旋转 `+a` 会降低 `+x` 边（即 x 增大时斜坡下行）。平地/斜坡的精确拼装（无台阶、无空隙）**必须在 viewer 中验证**（步骤 6），因为斜坡中心的 `z` 非常敏感。
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **步骤 1：编写失败测试**
 
 ```python
 # tests/test_slope_terrain.py  (ajouter)
@@ -163,12 +163,12 @@ def test_flat_ramp_steeper_at_higher_difficulty():
     assert hard.geometries[1].geom.pos[2] < easy.geometries[1].geom.pos[2]
 ```
 
-- [ ] **Step 2: Lancer le test — il doit échouer**
+- [ ] **步骤 2：运行测试 — 必须失败**
 
-Run: `uv run pytest tests/test_slope_terrain.py -k flat_ramp -v`
-Expected: FAIL — `ImportError: cannot import name 'FlatRampTerrainCfg'`
+运行：`uv run pytest tests/test_slope_terrain.py -k flat_ramp -v`
+预期：FAIL — `ImportError: cannot import name 'FlatRampTerrainCfg'`
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **步骤 3：最小实现**
 
 ```python
 # src/mjlab_microduck/tasks/slope_terrain.py  (ajouter en tête)
@@ -233,40 +233,39 @@ class FlatRampTerrainCfg(SubTerrainCfg):
         )
 ```
 
-- [ ] **Step 4: Lancer les tests — ils doivent passer**
+- [ ] **步骤 4：运行测试 — 必须通过**
 
-Run: `uv run pytest tests/test_slope_terrain.py -v`
-Expected: PASS (5 tests)
+运行：`uv run pytest tests/test_slope_terrain.py -v`
+预期：PASS（5 个测试）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add src/mjlab_microduck/tasks/slope_terrain.py tests/test_slope_terrain.py
 git commit -m "roller-slope: terrain custom plat+rampe (FlatRampTerrainCfg + tests)"
 ```
 
-- [ ] **Step 6: Vérification visuelle (checkpoint humain)**
+- [ ] **步骤 6：视觉验证（人工检查点）**
 
-La géométrie (surtout `ramp_cz` et le signe du quaternion) doit être confirmée à l'œil.
-Après la Task 4 (env assemblé), lancer le viewer play (voir Task 4 Step 6) et vérifier :
-la zone plate rejoint la rampe **sans marche ni trou**, et la rampe **descend** dans
-la direction `+x` (devant le robot). Si un décalage vertical apparaît, ajuster `ramp_cz` ;
-si la rampe monte au lieu de descendre, inverser le signe (`-half`) du quaternion.
+几何（尤其是 `ramp_cz` 和四元数符号）必须用肉眼确认。
+任务 4 完成后（环境组装完毕），运行 viewer play（见任务 4 步骤 6）并验证：
+平地区域与斜坡拼接处**无台阶、无空隙**，且斜坡沿 `+x` 方向（机器人前方）**下行**。若出现垂直错位，调整 `ramp_cz`；
+若斜坡反而上行，则反转四元数的符号（`-half`）。
 
 ---
 
-## Task 3 : curriculum de raideur `terrain_levels_slope`
+## 任务 3：坡度 curriculum `terrain_levels_slope`
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py`
-- Test: `tests/test_slope_curriculum.py`
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`
+- 测试：`tests/test_slope_curriculum.py`
 
-**Interfaces:**
-- Produces:
-  - `slope_move_masks(distance: torch.Tensor, size_x: float) -> tuple[torch.Tensor, torch.Tensor]` — helper pur. `move_up = distance > size_x * 0.5` (a atteint le bas → rampe plus raide) ; `move_down = (distance < size_x * 0.2) & ~move_up` (chute/blocage tôt → rampe plus douce). Retourne `(move_up, move_down)` en `bool`.
-  - `terrain_levels_slope(env, env_ids) -> torch.Tensor` — signature curriculum mjlab ; calcule la distance parcourue en `x` depuis l'origine, applique `slope_move_masks`, appelle `terrain.update_env_origins`, retourne le niveau moyen.
+**接口：**
+- 产出：
+  - `slope_move_masks(distance: torch.Tensor, size_x: float) -> tuple[torch.Tensor, torch.Tensor]` — 纯 helper。`move_up = distance > size_x * 0.5`（到达坡底 → 斜坡更陡）；`move_down = (distance < size_x * 0.2) & ~move_up`（早期摔倒/卡住 → 斜坡更缓）。返回 `(move_up, move_down)` 布尔值。
+  - `terrain_levels_slope(env, env_ids) -> torch.Tensor` — mjlab curriculum 签名；计算从原点出发的 x 行进距离，应用 `slope_move_masks`，调用 `terrain.update_env_origins`，返回平均等级。
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **步骤 1：编写失败测试**
 
 ```python
 # tests/test_slope_curriculum.py
@@ -297,14 +296,14 @@ def test_stay_in_middle_band():
     assert not bool(up[0]) and not bool(down[0])
 ```
 
-- [ ] **Step 2: Lancer le test — il doit échouer**
+- [ ] **步骤 2：运行测试 — 必须失败**
 
-Run: `uv run pytest tests/test_slope_curriculum.py -v`
-Expected: FAIL — `ImportError: cannot import name 'slope_move_masks'`
+运行：`uv run pytest tests/test_slope_curriculum.py -v`
+预期：FAIL — `ImportError: cannot import name 'slope_move_masks'`
 
-- [ ] **Step 3: Implémentation minimale**
+- [ ] **步骤 3：最小实现**
 
-Ajouter dans `src/mjlab_microduck/tasks/mdp.py` (près des autres curriculums, ex. après `com_range_curriculum`). Vérifier en tête de fichier que `torch` est importé (il l'est).
+在 `src/mjlab_microduck/tasks/mdp.py` 中添加（放在其他 curriculum 附近，例如 `com_range_curriculum` 之后）。检查文件顶部确认已导入 `torch`（确实已导入）。
 
 ```python
 def slope_move_masks(distance: "torch.Tensor", size_x: float):
@@ -339,12 +338,12 @@ def terrain_levels_slope(env, env_ids):
     return torch.mean(terrain.terrain_levels.float())
 ```
 
-- [ ] **Step 4: Lancer le test — il doit passer**
+- [ ] **步骤 4：运行测试 — 必须通过**
 
-Run: `uv run pytest tests/test_slope_curriculum.py -v`
-Expected: PASS (3 tests)
+运行：`uv run pytest tests/test_slope_curriculum.py -v`
+预期：PASS（3 个测试）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add src/mjlab_microduck/tasks/mdp.py tests/test_slope_curriculum.py
@@ -353,20 +352,20 @@ git commit -m "roller-slope: curriculum de raideur terrain_levels_slope (+ helpe
 
 ---
 
-## Task 4 : env cfg `roller_slope` + enregistrement
+## 任务 4：env cfg `roller_slope` + 注册
 
-**Files:**
-- Create: `src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py`
-- Modify: `src/mjlab_microduck/tasks/__init__.py`
-- Test: `tests/test_roller_slope_cfg.py`
+**文件：**
+- 新建：`src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py`
+- 修改：`src/mjlab_microduck/tasks/__init__.py`
+- 测试：`tests/test_roller_slope_cfg.py`
 
-**Interfaces:**
-- Consumes: `make_microduck_velocity_rollers_env_cfg` (base physique/DR/obs), `FlatRampTerrainCfg` (Task 2), `terrain_levels_slope` (Task 3), fonctions mdp existantes : `body_upright_gaussian`, `is_alive`, `pose_target_match`, `pose_l1_penalty`, `feet_flat_penalty`, `neck_action_rate_l2`, `joint_torques_l2`, `robot_state_is_nan`, `reset_action_history`, `zero_command_padding`.
-- Produces: `make_microduck_roller_slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg` et `MicroduckRollerSlopeRlCfg` (`RslRlOnPolicyRunnerCfg`, `experiment_name="roller_slope"`).
+**接口：**
+- 消费：`make_microduck_velocity_rollers_env_cfg`（物理/DR/obs 基础）、`FlatRampTerrainCfg`（任务 2）、`terrain_levels_slope`（任务 3）、现有 mdp 函数：`body_upright_gaussian`、`is_alive`、`pose_target_match`、`pose_l1_penalty`、`feet_flat_penalty`、`neck_action_rate_l2`、`joint_torques_l2`、`robot_state_is_nan`、`reset_action_history`、`zero_command_padding`。
+- 产出：`make_microduck_roller_slope_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg` 和 `MicroduckRollerSlopeRlCfg`（`RslRlOnPolicyRunnerCfg`，`experiment_name="roller_slope"`）。
 
-> Réutiliser les blocs DR/obs/reset du roller env : on **part** de `make_microduck_velocity_rollers_env_cfg()` et on ne modifie QUE terrain, commande, récompenses, terminaisons, curriculum. Ne pas réécrire la DR.
+> 复用 roller env 的 DR/obs/reset 块：我们**从** `make_microduck_velocity_rollers_env_cfg()` **出发**，只修改地形、命令、奖励、终止、curriculum。不要重写 DR。
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **步骤 1：编写失败测试**
 
 ```python
 # tests/test_roller_slope_cfg.py
@@ -403,12 +402,12 @@ def test_has_upright_and_pose_rewards():
         assert name in cfg.rewards
 ```
 
-- [ ] **Step 2: Lancer le test — il doit échouer**
+- [ ] **步骤 2：运行测试 — 必须失败**
 
-Run: `uv run pytest tests/test_roller_slope_cfg.py -v`
-Expected: FAIL — `ModuleNotFoundError` (module env cfg absent)
+运行：`uv run pytest tests/test_roller_slope_cfg.py -v`
+预期：FAIL — `ModuleNotFoundError`（env cfg 模块缺失）
 
-- [ ] **Step 3: Implémentation**
+- [ ] **步骤 3：实现**
 
 ```python
 # src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py
@@ -550,29 +549,29 @@ MicroduckRollerSlopeRlCfg = RslRlOnPolicyRunnerCfg(
 )
 ```
 
-Puis enregistrer dans `src/mjlab_microduck/tasks/__init__.py`, en suivant EXACTEMENT le pattern d'enregistrement de `roller_crouch` déjà présent (import de `make_...` + `Microduck...RlCfg`, puis `register_mjlab_task(...)` avec un id du style `"Microduck-Roller-Slope"`). Copier le bloc `roller_crouch` et remplacer `crouch`→`slope`.
+然后在 `src/mjlab_microduck/tasks/__init__.py` 中注册，严格遵循已存在的 `roller_crouch` 注册模式（导入 `make_...` + `Microduck...RlCfg`，再用形如 `"Microduck-Roller-Slope"` 的 id 调用 `register_mjlab_task(...)`）。复制 `roller_crouch` 块并将 `crouch` 替换为 `slope`。
 
-- [ ] **Step 4: Lancer les tests — ils doivent passer**
+- [ ] **步骤 4：运行测试 — 必须通过**
 
-Run: `uv run pytest tests/test_roller_slope_cfg.py -v`
-Expected: PASS (4 tests)
+运行：`uv run pytest tests/test_roller_slope_cfg.py -v`
+预期：PASS（4 个测试）
 
-- [ ] **Step 5: Vérifier l'enregistrement de la tâche + build complet**
+- [ ] **步骤 5：验证任务注册 + 完整构建**
 
-Run:
+运行：
 ```bash
 uv run python -c "import gymnasium as gym; import mjlab_microduck.tasks; print([e for e in gym.registry if 'Slope' in e])"
 ```
-Expected: la liste contient l'id `Microduck-Roller-Slope` (ou variante enregistrée).
+预期：列表中包含 id `Microduck-Roller-Slope`（或已注册的变体）。
 
-- [ ] **Step 6: Vérification visuelle du terrain + descente (checkpoint humain — clôt Task 2 Step 6)**
+- [ ] **步骤 6：地形 + 下行的视觉验证（人工检查点 — 收尾任务 2 步骤 6）**
 
-Lancer un court entraînement puis le play (ou `scripts/play_latest.py` selon l'usage du dépôt) et observer :
-1. Plat + rampe assemblés sans marche/trou ; la rampe **descend** devant le robot.
-2. Le robot spawne sur le plat, part vers l'avant, atteint la rampe.
-Si la géométrie est fausse, corriger `slope_terrain.py` (voir Task 2 Step 6) et re-commit.
+启动一个短训练后进行 play（或按仓库惯例运行 `scripts/play_latest.py`）并观察：
+1. 平地 + 斜坡拼接无台阶/空隙；斜坡在机器人前方**下行**。
+2. 机器人在平地 spawn，向前起步，到达斜坡。
+若几何错误，修正 `slope_terrain.py`（见任务 2 步骤 6）并重新提交。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_slope_env_cfg.py src/mjlab_microduck/tasks/__init__.py tests/test_roller_slope_cfg.py
@@ -581,24 +580,24 @@ git commit -m "roller-slope: env descente passive (terrain plat+rampe, cmd nulle
 
 ---
 
-## Task 5 : déploiement — flag `--slope` + touche `Y`
+## 任务 5：部署 — `--slope` 标志 + `Y` 键
 
-**Files:**
-- Modify: `scripts/infer_policy.py`
+**文件：**
+- 修改：`scripts/infer_policy.py`
 
-**Interfaces:**
-- Consumes: le `.onnx` exporté de la politique `roller_slope`.
-- Produces: argument CLI `--slope <path>` ; attribut `self.slope_session` + flag `self.slope_mode` ; méthode `toggle_slope_mode()` ; touche `GLFW_KEY_Y = 89` câblée.
+**接口：**
+- 消费：`roller_slope` 策略导出的 `.onnx`。
+- 产出：CLI 参数 `--slope <path>`；属性 `self.slope_session` + 标志 `self.slope_mode`；方法 `toggle_slope_mode()`；按键 `GLFW_KEY_Y = 89` 绑定。
 
-> La politique pente tourne avec commande twist nulle (comme le mode standing). En slope mode, la bascule automatique walking/standing doit être neutralisée.
+> 坡度策略以零 twist 命令运行（与 standing 模式相同）。在 slope 模式下，必须禁用 walking/standing 的自动切换。
 
-- [ ] **Step 1: Ajouter l'argument CLI et charger la session**
+- [ ] **步骤 1：添加 CLI 参数并加载 session**
 
-Dans `main()` (près des autres `add_argument`, ~ligne 471) :
+在 `main()` 中（其他 `add_argument` 附近，约第 471 行）：
 ```python
     parser.add_argument("--slope", type=str, default=None, help="Path to slope policy ONNX file (press Y to toggle)")
 ```
-Passer `slope_onnx_path=args.slope` au constructeur du contrôleur (ajouter le paramètre `slope_onnx_path=None` à `__init__`, ~ligne 51-57, et charger comme les autres) :
+将 `slope_onnx_path=args.slope` 传给控制器构造函数（在 `__init__` 中添加参数 `slope_onnx_path=None`，约第 51-57 行，并像其他 session 一样加载）：
 ```python
         self.slope_session = None
         self.slope_mode = False
@@ -607,9 +606,9 @@ Passer `slope_onnx_path=args.slope` au constructeur du contrôleur (ajouter le p
             self.slope_session = ort.InferenceSession(slope_onnx_path)
 ```
 
-- [ ] **Step 2: Ajouter `toggle_slope_mode` et neutraliser la bascule auto**
+- [ ] **步骤 2：添加 `toggle_slope_mode` 并禁用自动切换**
 
-Après `toggle_body_pose_mode` (~ligne 285) :
+在 `toggle_body_pose_mode` 之后（约第 285 行）：
 ```python
     def toggle_slope_mode(self):
         """Bascule vers/depuis la politique pente (descente passive)."""
@@ -627,34 +626,34 @@ Après `toggle_body_pose_mode` (~ligne 285) :
             self.current_policy = "walking" if self.walking_session else "standing"
             print("Slope mode: OFF")
 ```
-Dans `_update_policy_session` (~ligne 250), ajouter le garde en tête (après le garde `ground_pick_mode`) :
+在 `_update_policy_session`（约第 250 行）中，在守卫头部添加（在 `ground_pick_mode` 守卫之后）：
 ```python
         if self.slope_mode:
             return  # Ne pas basculer pendant le mode pente
 ```
 
-- [ ] **Step 3: Câbler la touche `Y`**
+- [ ] **步骤 3：绑定 `Y` 键**
 
-Ajouter le code de touche près des autres (~ligne 680) :
+在其他按键附近（约第 680 行）添加按键代码：
 ```python
     GLFW_KEY_Y = 89
 ```
-Dans `key_callback`, ajouter une branche (ex. après la branche `GLFW_KEY_B`) :
+在 `key_callback` 中添加分支（例如在 `GLFW_KEY_B` 分支之后）：
 ```python
             elif key == GLFW_KEY_Y:
                 policy.toggle_slope_mode()
 ```
-Ajouter la ligne d'aide clavier (près des `print` ~ligne 821) :
+添加键盘帮助行（约第 821 行 `print` 附近）：
 ```python
     print("  Y:                toggle slope mode (requires --slope, descente passive)")
 ```
 
-- [ ] **Step 4: Vérifier que le script se charge sans erreur**
+- [ ] **步骤 4：验证脚本无错误加载**
 
-Run: `uv run python scripts/infer_policy.py --help`
-Expected: l'aide s'affiche et liste `--slope`.
+运行：`uv run python scripts/infer_policy.py --help`
+预期：帮助信息显示并列出 `--slope`。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add scripts/infer_policy.py
@@ -663,9 +662,9 @@ git commit -m "roller-slope: deploiement --slope + touche Y (bascule mode pente)
 
 ---
 
-## Self-Review (fait par l'auteur du plan)
+## 自审（由计划作者完成）
 
-- **Couverture spec** : tâche dédiée (Task 4) ✓ ; terrain plat+rampe custom (Task 2) ✓ ; départ plat + impulsion (Task 4 reset velocity_range) ✓ ; commande nulle (Task 4) ✓ ; récompenses équilibre + pose debout + anti-écrasement (Task 4) ✓ ; terminaisons chute/bas/nan (Task 4) ✓ ; curriculum 0→20° (Task 1 angle + Task 3 promotion) ✓ ; obs 61D interchangeable (hérité du roller env, non modifié) ✓ ; bouton Y (Task 5) ✓.
-- **Placeholders** : aucun « TBD/TODO » ; les deux checkpoints humains (géométrie viewer) sont des vérifications explicites, pas des trous d'implémentation.
-- **Cohérence des types** : `ramp_angle_by_difficulty` (Task 1) réutilisé par `FlatRampTerrainCfg` (Task 2) ; `slope_move_masks` (Task 3) consommé par `terrain_levels_slope` (Task 3) ; noms de récompenses testés en Task 4 (`upright`, `alive`, `standing_pose`, `feet_flat`) alignés sur l'implémentation.
-- **Risques signalés** : géométrie de la rampe (`ramp_cz`, signe du quaternion) à confirmer au viewer ; noms exacts d'API mjlab (`terrain.terrain_levels`, `TerrainEntityCfg`, id d'enregistrement) à valider contre le pattern `roller_crouch` existant lors de l'implémentation.
+- **规格覆盖：** 专用任务（任务 4）✓；自定义平地+斜坡地形（任务 2）✓；平地起步 + 冲量（任务 4 reset velocity_range）✓；零命令（任务 4）✓；平衡 + 直立姿态 + 防塌陷奖励（任务 4）✓；摔倒/出界/nan 终止（任务 4）✓；0→20° curriculum（任务 1 角度 + 任务 3 晋升）✓；61D obs 可互换（继承自 roller env，未修改）✓；Y 键（任务 5）✓。
+- **占位符：** 无任何「TBD/TODO」；两个人工检查点（viewer 几何）是明确的验证步骤，不是实现空洞。
+- **类型一致性：** `ramp_angle_by_difficulty`（任务 1）被 `FlatRampTerrainCfg`（任务 2）复用；`slope_move_masks`（任务 3）被 `terrain_levels_slope`（任务 3）消费；任务 4 中测试的奖励名称（`upright`、`alive`、`standing_pose`、`feet_flat`）与实现对齐。
+- **已标记风险：** 斜坡几何（`ramp_cz`、四元数符号）需在 viewer 中确认；mjlab API 的确切名称（`terrain.terrain_levels`、`TerrainEntityCfg`、注册 id）需在实现时与已有的 `roller_crouch` 模式对照验证。

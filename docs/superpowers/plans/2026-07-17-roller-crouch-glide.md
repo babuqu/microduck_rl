@@ -1,50 +1,50 @@
-# Roller Crouch-Glide Implementation Plan
+# Roller Crouch-Glide 实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 来逐任务实现此计划。步骤使用 checkbox（`- [ ]`）语法进行跟踪。
 
-**Goal:** Ajouter un geste « s'accroupir en glissant puis se relever » déclenché au bouton A, sans modifier le runtime Rust, en entraînant une policy mjlab chargée dans le slot `--ground-pick`.
+**目标：** 添加一个"蹲下-滑行-然后站起来"的动作，由 A 按钮触发，不修改 Rust runtime，通过训练一个 mjlab policy 加载到 `--ground-pick` slot 中。
 
-**Architecture:** Nouvelle tâche mjlab entraînée sur le robot rollers, pilotée par la commande de phase `GroundPickPhaseCommand` (celle qu'envoie le slot ground-pick du runtime). Une nouvelle reward suit une cible de hauteur du tronc « en trapèze » (haut → bas → palier 1 s → haut) le long de la phase. Le même layout d'obs 61D que la policy roller → interchangeable au runtime. Export ONNX, chargé via `--ground-pick`.
+**架构：** 在 rollers 机器人上训练的新 mjlab 任务，由 phase 命令 `GroundPickPhaseCommand`（runtime ground-pick slot 发送的那个）驱动。一个新的 reward 沿 phase 跟踪一个"梯形"的躯干高度目标（高 → 低 → 1 s 平台 → 高）。与 roller policy 相同的 61D obs layout → runtime 可互换。导出 ONNX，通过 `--ground-pick` 加载。
 
-**Tech Stack:** Python, PyTorch, mjlab 1.3.0, MuJoCo, uv, ONNX. Runtime cible : `apirrone/microduck_runtime` (Rust, binaire — NON modifié).
+**技术栈：** Python、PyTorch、mjlab 1.3.0、MuJoCo、uv、ONNX。目标 runtime：`apirrone/microduck_runtime`（Rust，二进制——不修改）。
 
-## Global Constraints
+## 全局约束
 
-- **Aucune modification du runtime Rust.** Le geste réutilise le slot `--ground-pick` existant (bouton A, one-shot).
-- **Layout d'obs unifié 61D** obligatoire (`--new-cmd-obs`) : `[twist(3), head(4), body(6)]`, head/body zero-paddés. Toute nouvelle policy DOIT conserver ce layout.
-- **14 joints actifs** (roues passives exclues via `SceneEntityCfg("robot", joint_names=(r"^(?!passive_).*",))`), `action.scale = 1.0`, `kp_fw = 200`.
-- **Parité entraînement/déploiement (sim2real) :** au déploiement, forcer `--ground-pick-kp-ratio 1.0` (défaut 0.6), `--ground-pick-action-scale` = action_scale runtime, `--ground-pick-period 5.0`.
-- **Phase encoding (imposé par le runtime) :** `command = [cos(2π·φ), sin(2π·φ), 0]`, période 4 s. Palier de glisse = 1 s → `hold_lo=0.375`, `hold_hi=0.625`.
-- **Commits simples** (pas de `Co-Authored-By`).
-- Lancer les tests via `uv run --with pytest pytest` (pas de dépendance pytest ajoutée au projet).
-- Spec de référence : `docs/superpowers/specs/2026-07-17-roller-crouch-glide-design.md`.
+- **不修改 Rust runtime。** 动作复用现有的 `--ground-pick` slot（A 按钮，one-shot）。
+- **必须使用统一的 61D obs layout**（`--new-cmd-obs`）：`[twist(3), head(4), body(6)]`，head/body zero-padded。任何新 policy 都必须保持此 layout。
+- **14 个 active joints**（通过 `SceneEntityCfg("robot", joint_names=(r"^(?!passive_).*",))` 排除 passive 轮），`action.scale = 1.0`，`kp_fw = 200`。
+- **训练/部署对齐（sim2real）：** 部署时强制 `--ground-pick-kp-ratio 1.0`（默认 0.6），`--ground-pick-action-scale` = runtime action_scale，`--ground-pick-period 5.0`。
+- **Phase encoding（由 runtime 强制）：** `command = [cos(2π·φ), sin(2π·φ), 0]`，周期 4 s。滑行平台 = 1 s → `hold_lo=0.375`，`hold_hi=0.625`。
+- **简单的 commits**（没有 `Co-Authored-By`）。
+- 通过 `uv run --with pytest pytest` 运行测试（不向项目添加 pytest 依赖）。
+- 参考规格：`docs/superpowers/specs/2026-07-17-roller-crouch-glide-design.md`。
 
 ---
 
-## File Structure
+## 文件结构
 
-| Fichier | Responsabilité |
+| 文件 | 责任 |
 |---|---|
-| `src/mjlab_microduck/tasks/mdp.py` | **Modifier.** Ajouter 3 fonctions : `crouch_height_target` (pure), `crouch_glide_reward_from_values` (pure), `crouch_glide_height_by_phase` (wrapper env) et `forward_speed_reward`. |
-| `tests/test_crouch_glide.py` | **Créer.** Tests unitaires des fonctions pures. |
-| `src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py` | **Créer.** L'env (hybride roller + phase) + `MicroduckRollerCrouchRlCfg`. |
-| `src/mjlab_microduck/tasks/__init__.py` | **Modifier.** Importer + enregistrer `Mjlab-RollerCrouch-Flat-MicroDuck`. |
-| `tests/test_roller_crouch_cfg.py` | **Créer.** Smoke test : l'env se construit avec la bonne commande/rewards. |
+| `src/mjlab_microduck/tasks/mdp.py` | **修改。** 添加 3 个函数：`crouch_height_target`（pure）、`crouch_glide_reward_from_values`（pure）、`crouch_glide_height_by_phase`（env wrapper）和 `forward_speed_reward`。 |
+| `tests/test_crouch_glide.py` | **创建。** pure 函数的单元测试。 |
+| `src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py` | **创建。** env（hybrid roller + phase）+ `MicroduckRollerCrouchRlCfg`。 |
+| `src/mjlab_microduck/tasks/__init__.py` | **修改。** 导入 + 注册 `Mjlab-RollerCrouch-Flat-MicroDuck`。 |
+| `tests/test_roller_crouch_cfg.py` | **创建。** Smoke test：env 用正确的命令/rewards 构建。 |
 
 ---
 
-## Task 1: Cible de hauteur « en trapèze » (fonction pure)
+## Task 1："梯形"高度目标（pure 函数）
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py` (ajouter la fonction, après `com_height_target` vers la ligne 737)
-- Test: `tests/test_crouch_glide.py`
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`（在 `com_height_target` 之后约 737 行添加函数）
+- 测试：`tests/test_crouch_glide.py`
 
-**Interfaces:**
-- Produces: `crouch_height_target(phase: torch.Tensor, height_low: float, height_high: float, hold_lo: float = 0.375, hold_hi: float = 0.625) -> torch.Tensor` — prend la phase (B,) ∈ [0,1) et retourne la hauteur-cible (B,).
+**接口：**
+- 产出：`crouch_height_target(phase: torch.Tensor, height_low: float, height_high: float, hold_lo: float = 0.375, hold_hi: float = 0.625) -> torch.Tensor`——接收 phase (B,) ∈ [0,1) 并返回目标高度 (B,)。
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1：编写失败的测试**
 
-Créer `tests/test_crouch_glide.py` :
+创建 `tests/test_crouch_glide.py`：
 
 ```python
 import math
@@ -80,14 +80,14 @@ def test_crouch_height_target_rise_midpoint():
     assert torch.allclose(t, torch.tensor([(0.11 + 0.075) / 2]), atol=1e-6)
 ```
 
-- [ ] **Step 2: Lancer le test pour vérifier qu'il échoue**
+- [ ] **Step 2：运行测试验证它失败**
 
 Run: `uv run --with pytest pytest tests/test_crouch_glide.py -v`
 Expected: FAIL — `AttributeError: module ... has no attribute 'crouch_height_target'`
 
-- [ ] **Step 3: Implémenter la fonction**
+- [ ] **Step 3：实现函数**
 
-Dans `src/mjlab_microduck/tasks/mdp.py`, juste après `com_height_target` (après la ligne 737) :
+在 `src/mjlab_microduck/tasks/mdp.py` 中，紧跟在 `com_height_target` 之后（第 737 行之后）：
 
 ```python
 def crouch_height_target(
@@ -125,12 +125,12 @@ def crouch_height_target(
     return torch.where(descend, t_descend, torch.where(hold, t_hold, t_rise))
 ```
 
-- [ ] **Step 4: Lancer le test pour vérifier qu'il passe**
+- [ ] **Step 4：运行测试验证它通过**
 
 Run: `uv run --with pytest pytest tests/test_crouch_glide.py -v`
-Expected: PASS (4 tests)
+Expected: PASS（4 tests）
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5：Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/mdp.py tests/test_crouch_glide.py
@@ -139,22 +139,22 @@ git commit -m "roller-crouch: cible de hauteur en trapezoide (fonction pure + te
 
 ---
 
-## Task 2: Rewards crouch-glide et forward-speed
+## Task 2：crouch-glide 和 forward-speed rewards
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py`
-- Test: `tests/test_crouch_glide.py` (ajouts)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`
+- 测试：`tests/test_crouch_glide.py`（追加）
 
-**Interfaces:**
-- Consumes: `crouch_height_target` (Task 1).
-- Produces:
-  - `crouch_glide_reward_from_values(com_height, cmd_cos, cmd_sin, height_low, height_high, hold_lo=0.375, hold_hi=0.625, std=0.02) -> torch.Tensor` (pure).
-  - `crouch_glide_height_by_phase(env, command_name="twist", height_low=0.075, height_high=0.11, hold_lo=0.375, hold_hi=0.625, std=0.02, asset_cfg=_DEFAULT_ASSET_CFG) -> torch.Tensor` (wrapper env).
-  - `forward_speed_reward(env, vel_ref=0.2, asset_cfg=_DEFAULT_ASSET_CFG) -> torch.Tensor` — récompense la vitesse avant (élan), indépendante de la commande.
+**接口：**
+- 消费：`crouch_height_target`（Task 1）。
+- 产出：
+  - `crouch_glide_reward_from_values(com_height, cmd_cos, cmd_sin, height_low, height_high, hold_lo=0.375, hold_hi=0.625, std=0.02) -> torch.Tensor`（pure）。
+  - `crouch_glide_height_by_phase(env, command_name="twist", height_low=0.075, height_high=0.11, hold_lo=0.375, hold_hi=0.625, std=0.02, asset_cfg=_DEFAULT_ASSET_CFG) -> torch.Tensor`（env wrapper）。
+  - `forward_speed_reward(env, vel_ref=0.2, asset_cfg=_DEFAULT_ASSET_CFG) -> torch.Tensor`——奖励前进速度（动量），独立于命令。
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1：编写失败的测试**
 
-Ajouter à `tests/test_crouch_glide.py` :
+追加到 `tests/test_crouch_glide.py`：
 
 ```python
 def test_reward_is_one_when_height_matches_target():
@@ -191,14 +191,14 @@ def test_reward_at_phase_zero_expects_high_stance():
     assert r[1] < 0.2           # accroupi à phase 0 → faible
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2：验证失败**
 
 Run: `uv run --with pytest pytest tests/test_crouch_glide.py -v`
-Expected: FAIL — `crouch_glide_reward_from_values` n'existe pas.
+Expected: FAIL — `crouch_glide_reward_from_values` 不存在。
 
-- [ ] **Step 3: Implémenter les trois fonctions**
+- [ ] **Step 3：实现三个函数**
 
-Dans `src/mjlab_microduck/tasks/mdp.py`, à la suite de `crouch_height_target` :
+在 `src/mjlab_microduck/tasks/mdp.py` 中，紧接 `crouch_height_target` 之后：
 
 ```python
 def crouch_glide_reward_from_values(
@@ -262,12 +262,12 @@ def forward_speed_reward(
     return torch.tanh(torch.clamp(vx, min=0.0) / vel_ref)
 ```
 
-- [ ] **Step 4: Vérifier le passage**
+- [ ] **Step 4：验证通过**
 
 Run: `uv run --with pytest pytest tests/test_crouch_glide.py -v`
-Expected: PASS (7 tests au total)
+Expected: PASS（共 7 tests）
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5：Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/mdp.py tests/test_crouch_glide.py
@@ -276,20 +276,20 @@ git commit -m "roller-crouch: rewards crouch-glide-height et forward-speed"
 
 ---
 
-## Task 3: L'environnement + enregistrement de la tâche
+## Task 3：环境 + 任务注册
 
-**Files:**
-- Create: `src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py`
-- Modify: `src/mjlab_microduck/tasks/__init__.py`
-- Test: `tests/test_roller_crouch_cfg.py`
+**文件：**
+- 创建：`src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py`
+- 修改：`src/mjlab_microduck/tasks/__init__.py`
+- 测试：`tests/test_roller_crouch_cfg.py`
 
-**Interfaces:**
-- Consumes: `crouch_glide_height_by_phase`, `forward_speed_reward`, `ground_pick_return_pose` (Task 2 + existant), `GroundPickPhaseCommandCfg`, `GroundPickPhaseCommand`, `MICRODUCK_WALK_ROLLERS_ROBOT_CFG`.
-- Produces: `make_microduck_roller_crouch_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg`, `MicroduckRollerCrouchRlCfg`, tâche `Mjlab-RollerCrouch-Flat-MicroDuck`.
+**接口：**
+- 消费：`crouch_glide_height_by_phase`、`forward_speed_reward`、`ground_pick_return_pose`（Task 2 + 现有）、`GroundPickPhaseCommandCfg`、`GroundPickPhaseCommand`、`MICRODUCK_WALK_ROLLERS_ROBOT_CFG`。
+- 产出：`make_microduck_roller_crouch_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg`、`MicroduckRollerCrouchRlCfg`、任务 `Mjlab-RollerCrouch-Flat-MicroDuck`。
 
-- [ ] **Step 1: Écrire le smoke test qui échoue**
+- [ ] **Step 1：编写失败的 smoke test**
 
-Créer `tests/test_roller_crouch_cfg.py` :
+创建 `tests/test_roller_crouch_cfg.py`：
 
 ```python
 from mjlab_microduck.tasks.microduck_roller_crouch_env_cfg import (
@@ -320,14 +320,14 @@ def test_cfg_has_entry_velocity_event():
     assert "entry_velocity" in cfg.events
 ```
 
-- [ ] **Step 2: Vérifier l'échec**
+- [ ] **Step 2：验证失败**
 
 Run: `uv run --with pytest pytest tests/test_roller_crouch_cfg.py -v`
 Expected: FAIL — `ModuleNotFoundError: ...microduck_roller_crouch_env_cfg`
 
-- [ ] **Step 3: Créer le fichier d'environnement**
+- [ ] **Step 3：创建环境文件**
 
-Créer `src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py` :
+创建 `src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py`：
 
 ```python
 """Microduck roller crouch-glide task.
@@ -751,9 +751,9 @@ MicroduckRollerCrouchRlCfg = RslRlOnPolicyRunnerCfg(
 )
 ```
 
-- [ ] **Step 4: Enregistrer la tâche**
+- [ ] **Step 4：注册任务**
 
-Dans `src/mjlab_microduck/tasks/__init__.py`, ajouter l'import après le bloc rollers (après la ligne 54) :
+在 `src/mjlab_microduck/tasks/__init__.py` 中，在 rollers 块之后（第 54 行之后）添加 import：
 
 ```python
 from .microduck_roller_crouch_env_cfg import (
@@ -762,7 +762,7 @@ from .microduck_roller_crouch_env_cfg import (
 )
 ```
 
-et l'enregistrement après le bloc rollers (après la ligne 175) :
+并在 rollers 块之后（第 175 行之后）注册：
 
 ```python
 register_mjlab_task(
@@ -775,17 +775,17 @@ register_mjlab_task(
 print("✓ RollerCrouch task registered: Mjlab-RollerCrouch-Flat-MicroDuck")
 ```
 
-- [ ] **Step 5: Vérifier le passage du smoke test**
+- [ ] **Step 5：验证 smoke test 通过**
 
 Run: `uv run --with pytest pytest tests/test_roller_crouch_cfg.py -v`
-Expected: PASS (3 tests). (Ce test construit l'env — il compile le spec MuJoCo, donc il est plus lent ; c'est normal.)
+Expected: PASS（3 tests）。（此测试构建 env——它编译 MuJoCo spec，所以更慢；这是正常的。）
 
-- [ ] **Step 6: Vérifier que la tâche est bien enregistrée**
+- [ ] **Step 6：验证任务已注册**
 
 Run: `uv run python -c "import mjlab_microduck.tasks"`
-Expected: la ligne `✓ RollerCrouch task registered: Mjlab-RollerCrouch-Flat-MicroDuck` s'affiche sans erreur.
+Expected：显示行 `✓ RollerCrouch task registered: Mjlab-RollerCrouch-Flat-MicroDuck` 且无错误。
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7：Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py \
@@ -795,40 +795,40 @@ git commit -m "roller-crouch: env crouch-glide + enregistrement de la tache"
 
 ---
 
-## Task 4: Smoke run d'entraînement (vérification runtime)
+## Task 4：训练 smoke run（runtime 验证）
 
-**Files:** aucun (vérification observationnelle).
+**文件：** 无（observational 验证）。
 
-**Interfaces:**
-- Consumes: la tâche `Mjlab-RollerCrouch-Flat-MicroDuck` (Task 3).
+**接口：**
+- 消费：任务 `Mjlab-RollerCrouch-Flat-MicroDuck`（Task 3）。
 
-- [ ] **Step 1: Lancer un entraînement très court**
+- [ ] **Step 1：启动一个很短的训练**
 
 Run:
 ```bash
 uv run train Mjlab-RollerCrouch-Flat-MicroDuck \
   --env.scene.num-envs 64 --agent.max_iterations 5
 ```
-Expected: l'entraînement démarre, log les rewards (dont `crouch_glide_height`, `forward_speed`), 5 itérations sans crash, un checkpoint est écrit.
+Expected：训练启动，记录 rewards（包括 `crouch_glide_height`、`forward_speed`），5 次迭代无 crash，写入一个 checkpoint。
 
-- [ ] **Step 2: Vérifier l'absence d'erreur de forme d'obs**
+- [ ] **Step 2：验证没有 obs shape 错误**
 
-Inspecter le log de démarrage : l'obs actor doit être **61D** (comme les autres policies de la famille). Si la dim diffère, le padding head/body ou l'exclusion des roues est mal câblé — corriger avant de continuer.
+检查启动日志：actor obs 必须是 **61D**（与该 family 的其他 policy 一样）。如果 dim 不同，head/body padding 或轮子排除 wiring 有误——在继续之前修正。
 
-- [ ] **Step 3: Commit (si un fichier de conf a dû être ajusté)**
+- [ ] **Step 3：Commit（如果不得不调整 conf 文件）**
 
 ```bash
 git add -A && git commit -m "roller-crouch: ajustement post smoke-run"
 ```
-(S'il n'y a rien à committer, sauter cette étape.)
+（如果没有需要 commit 的，跳过此步。）
 
 ---
 
-## Task 5: Entraînement complet + vérification en play
+## Task 5：完整训练 + play 验证
 
-**Files:** itérations possibles sur `microduck_roller_crouch_env_cfg.py` (poids de reward, `CROUCH_HEIGHT_LOW`).
+**文件：** 可能对 `microduck_roller_crouch_env_cfg.py` 进行迭代（reward 权重、`CROUCH_HEIGHT_LOW`）。
 
-- [ ] **Step 1: Lancer l'entraînement complet**
+- [ ] **Step 1：启动完整训练**
 
 Run:
 ```bash
@@ -836,20 +836,20 @@ uv run train Mjlab-RollerCrouch-Flat-MicroDuck \
   --env.scene.num-envs 4096 --agent.max_iterations 8000
 ```
 
-- [ ] **Step 2: Visualiser en play**
+- [ ] **Step 2：在 play 中可视化**
 
-Run: `uv run scripts/play_latest.py` (ou l'entrée play du projet pour cette tâche).
-Observer le cycle : le robot **descend**, **glisse ~1 s** avec les roues qui continuent de tourner (il ne freine pas), puis **se relève** et la pose finale rejoint la pose roller debout. Il ne doit pas tomber.
+Run: `uv run scripts/play_latest.py`（或项目中此任务的 play 入口）。
+观察循环：机器人**下降**、**滑行 ~1 s** 轮子继续转动（不刹车），然后**站起来**，最终 pose 回到 roller 站立 pose。它不应该摔倒。
 
-- [ ] **Step 3: Itérer si nécessaire**
+- [ ] **Step 3：必要时迭代**
 
-Réglages typiques (dans `microduck_roller_crouch_env_cfg.py`) :
-- Il ne descend pas assez → baisser `CROUCH_HEIGHT_LOW` (ex. 0.07) et/ou monter le poids de `crouch_glide_height`.
-- Il freine pendant l'accroupi → monter le poids de `forward_speed`.
-- Il tombe en position basse → monter `upright`, baisser la vitesse d'entrée `ENTRY_VELOCITY_X`, ou raccourcir le palier (rapprocher `hold_lo`/`hold_hi`).
-- La remontée est brutale → monter `return_pose_*` et/ou `action_rate_l2`.
+典型调整（在 `microduck_roller_crouch_env_cfg.py` 中）：
+- 下降不够 → 降低 `CROUCH_HEIGHT_LOW`（例如 0.07）和/或提高 `crouch_glide_height` 权重。
+- 蹲下时刹车 → 提高 `forward_speed` 权重。
+- 在低位置摔倒 → 提高 `upright`、降低入口速度 `ENTRY_VELOCITY_X`，或缩短平台（拉近 `hold_lo`/`hold_hi`）。
+- 上升粗暴 → 提高 `return_pose_*` 和/或 `action_rate_l2`。
 
-Après chaque changement, relancer un entraînement et re-visualiser. Committer chaque réglage retenu :
+每次修改后，重新训练并重新可视化。Commit 每个保留的调整：
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_crouch_env_cfg.py
 git commit -m "roller-crouch: reglage <ce qui a change>"
@@ -857,18 +857,18 @@ git commit -m "roller-crouch: reglage <ce qui a change>"
 
 ---
 
-## Task 6: Export ONNX + déploiement sur le robot
+## Task 6：导出 ONNX + 在机器人上部署
 
-**Files:** aucun (manuel / matériel).
+**文件：** 无（手动/硬件）。
 
-- [ ] **Step 1: Exporter la policy en ONNX**
+- [ ] **Step 1：导出 policy 为 ONNX**
 
-Run: `uv run scripts/export_latest.py` (le normaliseur d'obs est baké dans le graphe par `scripts/export.py`).
-Récupérer le fichier `.onnx`, le renommer `roller_crouch.onnx`, le copier sur le robot (ex. `~/microduck/policies/roller_crouch.onnx`).
+Run: `uv run scripts/export_latest.py`（obs normalizer 由 `scripts/export.py` bake 到 graph 中）。
+获取 `.onnx` 文件，重命名为 `roller_crouch.onnx`，复制到机器人上（例如 `~/microduck/policies/roller_crouch.onnx`）。
 
-- [ ] **Step 2: Lancer le runtime avec le slot ground-pick**
+- [ ] **Step 2：用 ground-pick slot 启动 runtime**
 
-Sur le robot :
+在机器人上：
 ```bash
 microduck_runtime --variant pre-alpha --new-cmd-obs --roller \
   --model output.onnx \
@@ -880,20 +880,19 @@ microduck_runtime --variant pre-alpha --new-cmd-obs --roller \
   --ground-pick-action-scale 0.8
 ```
 
-**Paramètres critiques (parité sim2real) :**
-- `--ground-pick-kp-ratio 1.0` — le défaut 0.6 baisserait kp à 120 alors qu'on entraîne à 200.
-- `--ground-pick-action-scale 0.8` — doit matcher l'`action_scale` d'entraînement.
-- `--ground-pick-period 5.0` — doit matcher la période entraînée.
+**关键参数（sim2real 对齐）：**
+- `--ground-pick-kp-ratio 1.0`——默认 0.6 会把 kp 降到 120，而我们训练时是 200。
+- `--ground-pick-action-scale 0.8`——必须匹配训练的 `action_scale`。
+- `--ground-pick-period 5.0`——必须匹配训练的 period。
 
-- [ ] **Step 3: Tester le geste**
+- [ ] **Step 3：测试动作**
 
-Lancer le robot à petite vitesse en avant, appuyer sur **A**. Vérifier : il s'accroupit, glisse ~1 s, se relève, et la policy roller reprend la main proprement. Si instable, revenir à la Task 5 (itérer sur les poids / la hauteur / la vitesse d'entrée).
+让机器人以小速度前进，按 **A**。验证：它蹲下、滑行 ~1 s、站起来，roller policy 干净地接管。如果不稳定，回到 Task 5（迭代权重/高度/入口速度）。
 
 ---
 
-## Notes de vérification (self-review)
+## 验证说明（self-review）
 
-- **Couverture spec :** cible trapèze 1 s (Task 1) ; rewards crouch + anti-freinage + return-pose (Task 2/3) ; robot rollers + phase + obs 61D + DR (Task 3) ; vitesse d'entrée (Task 3, event `entry_velocity`) ; flags de déploiement dont le piège `kp-ratio` (Task 6). ✅
-- **Piège phase vs vitesse :** `wheel_speed_reward`/`braking`/`coasting_reward` du roller env utilisent `command[:,0]` comme *vitesse* — invalide ici où `command[:,0]=cos(2πφ)`. Elles sont donc **retirées** et remplacées par `forward_speed_reward` (indépendante de la commande). Testé par `test_cfg_has_crouch_and_forward_rewards`.
-- **Cohérence des noms :** `crouch_glide_height` (clé reward) vs `crouch_glide_height_by_phase` (fonction) — voulu : la clé est le nom du terme, la fonction est `func=`.
-```
+- **Spec 覆盖：** 1 s 梯形目标（Task 1）；crouch + anti-braking + return-pose rewards（Task 2/3）；rollers 机器人 + phase + 61D obs + DR（Task 3）；入口速度（Task 3，event `entry_velocity`）；部署 flags 包括 `kp-ratio` 陷阱（Task 6）。✅
+- **Phase vs 速度陷阱：** roller env 的 `wheel_speed_reward`/`braking`/`coasting_reward` 使用 `command[:,0]` 作为*速度*——在这里无效，因为 `command[:,0]=cos(2πφ)`。因此它们被**移除**并由 `forward_speed_reward`（独立于命令）替代。由 `test_cfg_has_crouch_and_forward_rewards` 测试。
+- **命名一致性：** `crouch_glide_height`（reward key）vs `crouch_glide_height_by_phase`（函数）——有意的：key 是 term 名称，函数是 `func=`。

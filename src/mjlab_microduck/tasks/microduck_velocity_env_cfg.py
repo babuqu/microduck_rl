@@ -14,6 +14,16 @@ gait/feet terms, curriculum-ramped action-rate smoothing), with:
     penalty that prices only the escapable DC head droop (see below)
   - body_pose tracking infra kept intact but DISABLED (weight 0) so the obs
     slot stays alive for envs that use it
+    # 简短要点总结
+    **核心运动任务**：速度指令跟踪 + 头部姿态指令跟踪
+    **奖励/正则化方案**：以运动控制为核心（倾斜跟踪、步态/足部项、课程式动作速率平滑），关键设置：
+    1. 足部滑动惩罚固定为-0.1（弱化约束；强约束会限制该机器人大枢轴转向）
+    2. 采用固定适度指令范围（角速度±1.0保证转向可学习），不用超出机器人能力的扩宽课程
+    3. 原地转向：15%环境设线速度=0、角速度绝对值0.4~1.0；审计发现独立均匀采样使原地自旋样本仅约2%，该场景训练不足
+    4. 头部姿态跟踪设为主目标；采用EMA头部姿态偏差惩罚，仅对可消除的头部静态下垂进行约束
+    5. 保留躯体姿态跟踪框架但权重置0（关闭该目标），维持观测通道供其他环境使用
+
+
 """
 
 import math
@@ -267,9 +277,9 @@ def make_microduck_velocity_env_cfg(
     cfg.scene.sensors = (feet_ground_cfg, self_collision_cfg, foot_height_scan_cfg)
     cfg.viewer.body_name = "trunk_base"
 
-    # Action configuration
+    # Action configuration 
     joint_pos_action = cfg.actions["joint_pos"]
-    assert isinstance(joint_pos_action, JointPositionActionCfg)
+    assert isinstance(joint_pos_action, JointPositionActionCfg)  # 确保是关节位置动作
     joint_pos_action.scale = 1.0
 
     # === REWARDS ===
@@ -528,46 +538,52 @@ def make_microduck_velocity_env_cfg(
             },
         )
 
-    # Observations
-    del cfg.observations["actor"].terms["base_lin_vel"]
+    # Observations 观测项
+    del cfg.observations["actor"].terms["base_lin_vel"] # 基础线速度观测项
     # mjlab 1.3.0 adds a height_scan term (terrain ray scan) to both groups by
     # default. The microduck has no such body-mounted terrain sensor for the
     # policy, so drop it from both (mirrors microban).
-    del cfg.observations["actor"].terms["height_scan"]
-    del cfg.observations["critic"].terms["height_scan"]
+    del cfg.observations["actor"].terms["height_scan"] # 高度扫描观测项
+    del cfg.observations["critic"].terms["height_scan"] # 高度扫描观测项
 
-    # Add base_lin_vel to critic only (privileged information)
+    # Add base_lin_vel to critic only (privileged information) 基础线速度观测项仅对critic有效
     cfg.observations["critic"].terms["base_lin_vel"] = ObservationTermCfg(
         func=mdp.base_lin_vel,
         scale=1.0,
     )
 
-    # Determine gravity/accelerometer term name based on flag
+    # Determine gravity/accelerometer term name based on flag  根据标志位选择重力或加速度计观测项
+    # 重力观测项：USE_PROJECTED_GRAVITY=True
+    # 加速度计观测项：USE_PROJECTED_GRAVITY=False
     gravity_term_name = "projected_gravity" if USE_PROJECTED_GRAVITY else "raw_accelerometer"
 
-    # Replace projected_gravity with raw_accelerometer if flag is False
+    # Replace projected_gravity with raw_accelerometer if flag is False  如果标志位为False，替换重力观测项为加速度计观测项
     if not USE_PROJECTED_GRAVITY:
-        # Remove projected_gravity and add raw_accelerometer
-        del cfg.observations["actor"].terms["projected_gravity"]
+        # Remove projected_gravity and add raw_accelerometer  移除重力观测项，添加加速度计观测项
+        del cfg.observations["actor"].terms["projected_gravity"] # 重力观测项
         cfg.observations["actor"].terms["raw_accelerometer"] = ObservationTermCfg(
             func=microduck_mdp.raw_accelerometer,
             scale=1.0,
-        )
+        ) # 加速度计观测项
+
+
 
     cfg.observations["actor"].terms[gravity_term_name] = deepcopy(
         cfg.observations["actor"].terms[gravity_term_name]
-    )
+    ) # 重力观测项或加速度计观测项
     cfg.observations["actor"].terms["base_ang_vel"] = deepcopy(
         cfg.observations["actor"].terms["base_ang_vel"]
-    )
+    ) # 基础角速度观测项
 
-    cfg.observations["actor"].terms["base_ang_vel"].delay_min_lag = 0
+
+
+    cfg.observations["actor"].terms["base_ang_vel"].delay_min_lag = 0  # 基础角速度观测项最小延迟时间
     cfg.observations["actor"].terms["base_ang_vel"].delay_max_lag = 1  # was 3 (=60 ms worst case); real dxl IMU path is fast — ±20 ms envelope (2026-07 audit)
-    cfg.observations["actor"].terms["base_ang_vel"].delay_update_period = 64
+    cfg.observations["actor"].terms["base_ang_vel"].delay_update_period = 64  # 基础角速度观测项更新周期
 
-    cfg.observations["actor"].terms[gravity_term_name].delay_min_lag = 0
+    cfg.observations["actor"].terms[gravity_term_name].delay_min_lag = 0  # 重力观测项或加速度计观测项最小延迟时间
     cfg.observations["actor"].terms[gravity_term_name].delay_max_lag = 1  # was 3 (=60 ms worst case); real dxl IMU path is fast — ±20 ms envelope (2026-07 audit)
-    cfg.observations["actor"].terms[gravity_term_name].delay_update_period = 64
+    cfg.observations["actor"].terms[gravity_term_name].delay_update_period = 64  # 重力观测项或加速度计观测项更新周期
 
     # The critic's sensor-derived terms are the one obs path `nan_state` cannot
     # protect (it checks joint + root state; these read raycast/contact sensor
@@ -575,7 +591,11 @@ def make_microduck_velocity_env_cfg(
     # clean). A single NaN here kills the whole run via rsl_rl's check_nan —
     # that is the 2026-08-21 Velocity2-Rough-Backlash crash. Critic-only, so
     # sanitizing costs the policy nothing.
-    for _term, _safe in (
+    # Sanitize the critic's sensor-derived terms  对critic的传感器派生项进行净化
+    # 仅对critic有效，对actor无效
+    # 保护critic的传感器派生项，防止NaN值导致的运行崩溃
+
+    for _term, _safe in ( 
         ("foot_contact_forces", microduck_mdp.foot_contact_forces_safe),
         ("foot_height", microduck_mdp.foot_height_safe),
         ("foot_air_time", microduck_mdp.foot_air_time_safe),
@@ -583,7 +603,8 @@ def make_microduck_velocity_env_cfg(
         if _term in cfg.observations["critic"].terms:
             cfg.observations["critic"].terms[_term].func = _safe
 
-    # Observation noise configuration (edit these values as needed)
+    # Observation noise configuration (edit these values as needed) 观测项噪声配置（根据需要编辑这些值）
+    # 基础角速度观测项：was 0.2
     cfg.observations["actor"].terms["base_ang_vel"].noise = Unoise(n_min=-0.03, n_max=0.03) # was 0.2
     cfg.observations["actor"].terms[gravity_term_name].noise = Unoise(n_min=-0.01, n_max=0.01)  # was 0.15
     cfg.observations["actor"].terms["joint_pos"].noise = Unoise(n_min=-0.001, n_max=0.001)  # was 0.05
@@ -592,6 +613,7 @@ def make_microduck_velocity_env_cfg(
     # IMU mounting-misalignment DR (per-env constant rotation of the IMU-derived
     # observations). Applied to the ACTOR only (the policy sees a slightly rotated
     # IMU frame, like a real mounting error); the critic keeps the true values.
+    # 启用IMU方向随机化
     if ENABLE_IMU_ORIENTATION_RANDOMIZATION:
         av = cfg.observations["actor"].terms["base_ang_vel"]
         av.func = microduck_mdp.base_ang_vel_imu_misaligned
@@ -605,6 +627,7 @@ def make_microduck_velocity_env_cfg(
     # present_velocity via a moving-average over the previous position-sample
     # window, so the value the policy actually reads is ~1 control period old.
     # Matches reality and stops the policy relying on instantaneous qdot feedback.
+    # 启用关节速度延迟
     cfg.observations["actor"].terms["joint_vel"] = deepcopy(
         cfg.observations["actor"].terms["joint_vel"]
     )
@@ -617,6 +640,7 @@ def make_microduck_velocity_env_cfg(
     # Deepcopy each joint_pos/joint_vel term first — actor and critic share the
     # same term objects/params dicts from the base template, so mutating one would
     # leak into the other (e.g. the encoder-bias `biased` flag below).
+    # 排除被动关节（如jaw linkage）的观测项
     passive_excluded = SceneEntityCfg("robot", joint_names=(r"^(?!passive_).*",))
     for grp in ("actor", "critic"):
         for term in ("joint_pos", "joint_vel"):
@@ -627,7 +651,7 @@ def make_microduck_velocity_env_cfg(
     # offset (startup event "encoder_bias"), but joint_pos_rel ignores it unless
     # biased=True. Feed the biased joint pos to the ACTOR only (what the real
     # encoders report); the critic keeps the true joint pos (privileged).
-    if ENABLE_ENCODER_BIAS:
+    if ENABLE_ENCODER_BIAS:# 启用编码偏置
         cfg.events["encoder_bias"].params["bias_range"] = ENCODER_BIAS_RANGE
         cfg.observations["actor"].terms["joint_pos"].params["biased"] = True
         cfg.observations["critic"].terms["joint_pos"].params["biased"] = False
@@ -637,7 +661,8 @@ def make_microduck_velocity_env_cfg(
     # Commands — deepcopy to avoid shared-state corruption from other env cfgs
     # (make_velocity_env_cfg() returns objects with shared mutable references;
     # standup/ground_pick envs mutate commands["twist"] in place, zeroing ranges)
-    command: UniformVelocityCommandCfg = deepcopy(cfg.commands["twist"])
+    # 命令配置
+    command: UniformVelocityCommandCfg = deepcopy(cfg.commands["twist"]) 
     cfg.commands["twist"] = command
     command.rel_standing_envs = 0.02  # small but non-zero from the start, ramped up by curriculum
     command.rel_heading_envs = 0.0

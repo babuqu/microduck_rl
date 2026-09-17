@@ -1,39 +1,39 @@
-# Ground-pick par suivi de pose — Implementation Plan
+# Ground-pick 基于姿态跟踪 — 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向 agentic worker：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按任务逐项实施本计划。步骤使用复选框（`- [ ]`）语法进行追踪。
 
-**Goal:** Réécrire la tâche `Mjlab-GroundPick-Flat-MicroDuck` pour piloter le geste par un suivi de pose articulaire interpolé par la phase (STAND→DOWN→STAND) au lieu de l'objectif espace-tâche actuel (proximité bouche-sol + retour de pose).
+**目标：** 重写 `Mjlab-GroundPick-Flat-MicroDuck` 任务，以按相位插值的关节姿态跟踪（STAND→DOWN→STAND）来驱动动作，替代当前的空间任务目标（嘴-地接近 + 姿态回归）。
 
-**Architecture:** On ajoute trois fonctions mdp pures/quasi-pures (`phase_pose_blend`, `phase_pose_track`, `phase_pose_track_l1`) qui calculent une cible articulaire interpolée entre HOME (STAND) et un dict `DOWN_POSE` selon un profil de phase à 4 segments, résolue **par nom**. On ajoute un flag `randomize_phase` à la commande de phase existante. On réécrit ensuite le bloc rewards de `microduck_ground_pick_env_cfg.py` en gardant tout le reste (DR, obs 61D, curricula, RlCfg).
+**架构：** 我们添加三个纯/近纯 mdp 函数（`phase_pose_blend`、`phase_pose_track`、`phase_pose_track_l1`），根据四段相位曲线计算在 HOME（STAND）与 `DOWN_POSE` 字典之间插值的关节目标，并**按名称**解析。我们在现有相位命令上添加 `randomize_phase` 标志。随后重写 `microduck_ground_pick_env_cfg.py` 的 rewards 块，保留其余一切（DR、61D obs、curricula、RlCfg）。
 
-**Tech Stack:** Python, PyTorch, mjlab 1.3.0, MuJoCo, uv, pytest (via `uv run --with pytest`).
+**技术栈：** Python、PyTorch、mjlab 1.3.0、MuJoCo、uv、pytest（通过 `uv run --with pytest`）。
 
-## Global Constraints
+## 全局约束
 
-- Résolution des joints **PAR NOM** (`asset.find_joints([name])[0][0]`), jamais par index en dur.
-- Obs 61D unifié **inchangé** (padding head/body zéro) → policy interchangeable dans le slot runtime.
-- Task id inchangé : `Mjlab-GroundPick-Flat-MicroDuck` (+ variante `-Rough-`).
-- Période de phase = **4.0 s** (défaut du slot `--ground-pick-period`).
-- Profil de phase (fractions) : `DESCENT_END=0.15`, `HOLD_END=0.50`, `RISE_END=0.65`.
-- `randomize_phase=False` pour la tâche ground_pick (parité déploiement bouton A à φ=0) ; défaut `True` de la cfg pour ne pas casser sit/stand.
-- STAND = HOME (`asset.data.default_joint_pos`, ne pas redéfinir). DOWN = dict `DOWN_POSE` par nom.
-- 14 joints actifs (mouth exclu). Robot `MICRODUCK_GROUND_PICK_ROBOT_CFG` (pas de roues → indices 0-4 jambe G, 5-8 cou/tête, 9-13 jambe D, mais on résout quand même par nom).
-- Fichiers mdp : imports déjà présents (`torch`, `Optional`, `Entity`, `SceneEntityCfg`, `ManagerBasedRlEnv`, `_DEFAULT_ASSET_CFG`).
+- **按名称**解析关节（`asset.find_joints([name])[0][0]`），绝不硬编码索引。
+- 61D obs **不变**（head/body 零填充）→ 策略在 runtime slot 中可互换。
+- 任务 id 不变：`Mjlab-GroundPick-Flat-MicroDuck`（+ `-Rough-` 变体）。
+- 相位周期 = **4.0 s**（`--ground-pick-period` slot 默认值）。
+- 相位曲线（分数）：`DESCENT_END=0.15`、`HOLD_END=0.50`、`RISE_END=0.65`。
+- `randomize_phase=False` 用于 ground_pick 任务（部署时与 A 按钮在 φ=0 对齐）；cfg 默认 `True` 以免破坏 sit/stand。
+- STAND = HOME（`asset.data.default_joint_pos`，不要重定义）。DOWN = 按名称的 `DOWN_POSE` 字典。
+- 14 个主动关节（不含嘴）。机器人 `MICRODUCK_GROUND_PICK_ROBOT_CFG`（无轮 → 索引 0-4 左腿、5-8 颈/头、9-13 右腿，但仍按名称解析）。
+- mdp 文件：导入已存在（`torch`、`Optional`、`Entity`、`SceneEntityCfg`、`ManagerBasedRlEnv`、`_DEFAULT_ASSET_CFG`）。
 
 ---
 
-### Task 1: Fonction `phase_pose_blend` (blend 4 segments, pure)
+### 任务 1：函数 `phase_pose_blend`（四段混合，纯函数）
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py` (ajout d'une fonction ; l'insérer juste avant `phase_pose_match` ~ligne 2041)
-- Test: `tests/test_ground_pick_pose.py` (create)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`（新增函数；插入到 `phase_pose_match` 之前，约第 2041 行）
+- 测试：`tests/test_ground_pick_pose.py`（新建）
 
-**Interfaces:**
-- Produces: `phase_pose_blend(phase: torch.Tensor, descent_end: float, hold_end: float, rise_end: float) -> torch.Tensor` — renvoie un blend ∈ [0,1] de même shape que `phase` (0 = STAND, 1 = DOWN).
+**接口：**
+- 产出：`phase_pose_blend(phase: torch.Tensor, descent_end: float, hold_end: float, rise_end: float) -> torch.Tensor` — 返回与 `phase` 同形状的 blend ∈ [0,1]（0 = STAND，1 = DOWN）。
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **步骤 1：编写失败测试**
 
-Créer `tests/test_ground_pick_pose.py` :
+创建 `tests/test_ground_pick_pose.py`：
 
 ```python
 import torch
@@ -55,14 +55,14 @@ def test_phase_pose_blend_range():
     assert b.min() >= 0.0 and b.max() <= 1.0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
-Expected: FAIL — `ImportError: cannot import name 'phase_pose_blend'`
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
+预期：FAIL — `ImportError: cannot import name 'phase_pose_blend'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **步骤 3：编写最小实现**
 
-Dans `src/mjlab_microduck/tasks/mdp.py`, juste avant `def phase_pose_match(` (~ligne 2041) :
+在 `src/mjlab_microduck/tasks/mdp.py` 中，`def phase_pose_match(` 之前（约第 2041 行）：
 
 ```python
 def phase_pose_blend(
@@ -88,12 +88,12 @@ def phase_pose_blend(
     return b
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
-Expected: PASS (2 passed)
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
+预期：PASS（2 passed）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add tests/test_ground_pick_pose.py src/mjlab_microduck/tasks/mdp.py
@@ -102,22 +102,22 @@ git commit -m "feat(mdp): phase_pose_blend — blend 4 segments STAND<->DOWN par
 
 ---
 
-### Task 2: Rewards `phase_pose_track` / `phase_pose_track_l1` (+ helper `_phase_pose_error`)
+### 任务 2：奖励 `phase_pose_track` / `phase_pose_track_l1`（+ helper `_phase_pose_error`）
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py` (ajout juste après `phase_pose_blend`)
-- Test: `tests/test_ground_pick_pose.py` (append)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`（在 `phase_pose_blend` 之后添加）
+- 测试：`tests/test_ground_pick_pose.py`（追加）
 
-**Interfaces:**
-- Consumes: `phase_pose_blend` (Task 1).
-- Produces:
-  - `_phase_pose_error(env, asset_cfg, command_name, target_pose: dict, descent_end, hold_end, rise_end, source_pose: dict | None = None) -> (cur: Tensor, target: Tensor)` — tenseurs (B, k) résolus par nom.
-  - `phase_pose_track(env, command_name="twist", target_pose: dict | None = None, source_pose: dict | None = None, std=0.3, descent_end=0.15, hold_end=0.50, rise_end=0.65, asset_cfg=_DEFAULT_ASSET_CFG) -> Tensor` — gaussienne `exp(-((cur-target)/std)²).mean(-1)`.
-  - `phase_pose_track_l1(env, command_name="twist", target_pose=None, source_pose=None, descent_end=0.15, hold_end=0.50, rise_end=0.65, asset_cfg=_DEFAULT_ASSET_CFG) -> Tensor` — `-(cur-target).abs().mean(-1)`.
+**接口：**
+- 消费：`phase_pose_blend`（任务 1）。
+- 产出：
+  - `_phase_pose_error(env, asset_cfg, command_name, target_pose: dict, descent_end, hold_end, rise_end, source_pose: dict | None = None) -> (cur: Tensor, target: Tensor)` — 按名称解析的 (B, k) 张量。
+  - `phase_pose_track(env, command_name="twist", target_pose: dict | None = None, source_pose: dict | None = None, std=0.3, descent_end=0.15, hold_end=0.50, rise_end=0.65, asset_cfg=_DEFAULT_ASSET_CFG) -> Tensor` — 高斯 `exp(-((cur-target)/std)²).mean(-1)`。
+  - `phase_pose_track_l1(env, command_name="twist", target_pose=None, source_pose=None, descent_end=0.15, hold_end=0.50, rise_end=0.65, asset_cfg=_DEFAULT_ASSET_CFG) -> Tensor` — `-(cur-target).abs().mean(-1)`。
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **步骤 1：编写失败测试**
 
-Ajouter à `tests/test_ground_pick_pose.py` un faux env léger + les assertions :
+向 `tests/test_ground_pick_pose.py` 添加一个轻量假 env + 断言：
 
 ```python
 from mjlab_microduck.tasks.mdp import phase_pose_track, phase_pose_track_l1
@@ -198,14 +198,14 @@ def test_phase_pose_track_returns_to_stand():
     assert torch.allclose(r, torch.tensor([1.0]), atol=1e-6), r
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
-Expected: FAIL — `ImportError: cannot import name 'phase_pose_track'`
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
+预期：FAIL — `ImportError: cannot import name 'phase_pose_track'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **步骤 3：编写最小实现**
 
-Dans `src/mjlab_microduck/tasks/mdp.py`, juste après `phase_pose_blend` :
+在 `src/mjlab_microduck/tasks/mdp.py` 中，`phase_pose_blend` 之后：
 
 ```python
 def _phase_pose_error(
@@ -293,12 +293,12 @@ def phase_pose_track_l1(
     return -(cur - target).abs().mean(dim=-1)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
-Expected: PASS (5 passed)
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py -q`
+预期：PASS（5 passed）
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add tests/test_ground_pick_pose.py src/mjlab_microduck/tasks/mdp.py
@@ -307,18 +307,18 @@ git commit -m "feat(mdp): phase_pose_track/_l1 — suivi de pose interpolée par
 
 ---
 
-### Task 3: Flag `randomize_phase` sur `GroundPickPhaseCommandCfg`
+### 任务 3：在 `GroundPickPhaseCommandCfg` 上添加 `randomize_phase` 标志
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/mdp.py` (classe `GroundPickPhaseCommand` ~3611/3626, cfg ~3644)
-- Test: `tests/test_ground_pick_pose.py` (append)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/mdp.py`（类 `GroundPickPhaseCommand` 约第 3611/3626 行，cfg 约第 3644 行）
+- 测试：`tests/test_ground_pick_pose.py`（追加）
 
-**Interfaces:**
-- Produces: `GroundPickPhaseCommandCfg.randomize_phase: bool = True` ; `GroundPickPhaseCommand.reset()` met la phase à 0 quand `randomize_phase=False`, sinon `torch.rand`.
+**接口：**
+- 产出：`GroundPickPhaseCommandCfg.randomize_phase: bool = True`；`GroundPickPhaseCommand.reset()` 在 `randomize_phase=False` 时将相位置 0，否则用 `torch.rand`。
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **步骤 1：编写失败测试**
 
-Ajouter à `tests/test_ground_pick_pose.py` :
+向 `tests/test_ground_pick_pose.py` 添加：
 
 ```python
 def test_ground_pick_cmd_cfg_has_randomize_phase_default_true():
@@ -336,35 +336,35 @@ def test_ground_pick_cmd_cfg_has_randomize_phase_default_true():
     assert cfg.period == 4.0
 ```
 
-Note : si la signature de `UniformVelocityCommandCfg.Ranges` diffère localement, adapter les champs — l'assertion clé est `cfg.randomize_phase is True`.
+注：如果本地 `UniformVelocityCommandCfg.Ranges` 签名不同，请适配字段 — 关键断言是 `cfg.randomize_phase is True`。
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py::test_ground_pick_cmd_cfg_has_randomize_phase_default_true -q`
-Expected: FAIL — `AttributeError: 'GroundPickPhaseCommandCfg' object has no attribute 'randomize_phase'`
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py::test_ground_pick_cmd_cfg_has_randomize_phase_default_true -q`
+预期：FAIL — `AttributeError: 'GroundPickPhaseCommandCfg' object has no attribute 'randomize_phase'`
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **步骤 3：编写最小实现**
 
-Dans `src/mjlab_microduck/tasks/mdp.py`, classe `GroundPickPhaseCommand`, modifier `__init__` et `reset` :
+在 `src/mjlab_microduck/tasks/mdp.py` 中，类 `GroundPickPhaseCommand`，修改 `__init__` 和 `reset`：
 
-Remplacer (dans `__init__`, ~ligne 3614) :
+替换（`__init__` 中，约第 3614 行）：
 ```python
         self._period = float(getattr(cfg, "period", self.PERIOD))
 ```
-par :
+为：
 ```python
         self._period = float(getattr(cfg, "period", self.PERIOD))
         self._randomize_phase = bool(getattr(cfg, "randomize_phase", True))
 ```
 
-Remplacer la méthode `reset` (~ligne 3626) :
+替换 `reset` 方法（约第 3626 行）：
 ```python
     def reset(self, env_ids: torch.Tensor | None) -> dict:
         if env_ids is not None and len(env_ids) > 0:
             self._gp_phase[env_ids] = torch.rand(len(env_ids), device=self.device)
         return {}
 ```
-par :
+为：
 ```python
     def reset(self, env_ids: torch.Tensor | None) -> dict:
         if env_ids is not None and len(env_ids) > 0:
@@ -375,7 +375,7 @@ par :
         return {}
 ```
 
-Dans la cfg `GroundPickPhaseCommandCfg` (~ligne 3644), ajouter le champ après `period` :
+在 cfg `GroundPickPhaseCommandCfg`（约第 3644 行）中，在 `period` 之后添加字段：
 ```python
 @_dataclass(kw_only=True)
 class GroundPickPhaseCommandCfg(UniformVelocityCommandCfg):
@@ -387,12 +387,12 @@ class GroundPickPhaseCommandCfg(UniformVelocityCommandCfg):
         return GroundPickPhaseCommand(self, env)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_pose.py::test_ground_pick_cmd_cfg_has_randomize_phase_default_true -q`
-Expected: PASS. Si la construction de `UniformVelocityCommandCfg` échoue pour une raison d'API locale, ajuster les champs du `base` dans le test (l'implémentation, elle, est correcte).
+运行：`uv run --with pytest pytest tests/test_ground_pick_pose.py::test_ground_pick_cmd_cfg_has_randomize_phase_default_true -q`
+预期：PASS。如果 `UniformVelocityCommandCfg` 的构建因本地 API 原因失败，请调整测试中 `base` 的字段（实现本身是正确的）。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add tests/test_ground_pick_pose.py src/mjlab_microduck/tasks/mdp.py
@@ -401,19 +401,19 @@ git commit -m "feat(mdp): flag randomize_phase sur GroundPickPhaseCommandCfg (d�
 
 ---
 
-### Task 4: Réécriture du bloc rewards + poses dans l'env cfg
+### 任务 4：重写 env cfg 中的 rewards 块 + 姿态
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/microduck_ground_pick_env_cfg.py`
-- Test: `tests/test_ground_pick_cfg.py` (create)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/microduck_ground_pick_env_cfg.py`
+- 测试：`tests/test_ground_pick_cfg.py`（新建）
 
-**Interfaces:**
-- Consumes: `phase_pose_track`, `phase_pose_track_l1` (Task 2) ; `randomize_phase` (Task 3).
-- Produces: `make_microduck_ground_pick_env_cfg(play=False, rough=False)` renvoie une cfg dont : commande `GroundPickPhaseCommand` avec `randomize_phase=False`, `period=4.0` ; rewards contiennent `phase_pose_track` (6.0) et `phase_pose_track_l1` (2.0), `mouth_ground_proximity` (1.0) ; ne contiennent plus `mouth_perpendicular_to_ground`, `ground_pick_return_pose_legs`, `ground_pick_return_pose_neck`.
+**接口：**
+- 消费：`phase_pose_track`、`phase_pose_track_l1`（任务 2）；`randomize_phase`（任务 3）。
+- 产出：`make_microduck_ground_pick_env_cfg(play=False, rough=False)` 返回的 cfg 满足：命令 `GroundPickPhaseCommand` 且 `randomize_phase=False`、`period=4.0`；rewards 包含 `phase_pose_track`（6.0）和 `phase_pose_track_l1`（2.0）、`mouth_ground_proximity`（1.0）；不再包含 `mouth_perpendicular_to_ground`、`ground_pick_return_pose_legs`、`ground_pick_return_pose_neck`。
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **步骤 1：编写失败测试**
 
-Créer `tests/test_ground_pick_cfg.py` :
+创建 `tests/test_ground_pick_cfg.py`：
 
 ```python
 from mjlab_microduck.tasks.microduck_ground_pick_env_cfg import (
@@ -446,16 +446,16 @@ def test_ground_pick_cfg_command_is_phase_no_randomize():
     assert cmd.randomize_phase is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试以确认失败**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
-Expected: FAIL — `assert 'phase_pose_track' in rewards` (KeyError/False).
+运行：`uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
+预期：FAIL — `assert 'phase_pose_track' in rewards`（KeyError/False）。
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **步骤 3：编写最小实现**
 
-Dans `src/mjlab_microduck/tasks/microduck_ground_pick_env_cfg.py` :
+在 `src/mjlab_microduck/tasks/microduck_ground_pick_env_cfg.py` 中：
 
-(a) Ajouter les constantes de poses/phase juste avant `def make_microduck_ground_pick_env_cfg(` :
+(a) 在 `def make_microduck_ground_pick_env_cfg(` 之前添加姿态/相位常量：
 
 ```python
 # ── Poses cibles du geste (rad, par NOM) ──────────────────────────────────────
@@ -481,15 +481,15 @@ RISE_END     = 0.65
 POSE_STD     = 0.3
 ```
 
-(b) Dans la boucle de suppression des rewards (~ligne 145-155), remplacer le contenu du geste. **Retirer** les deux blocs `mouth_perpendicular_to_ground` (~176-183) et les deux `ground_pick_return_pose_*` (~189-212), et **retuner** `mouth_ground_proximity` à `weight=1.0` (~163-172, changer `weight=2.0` → `weight=1.0`).
+(b) 在 rewards 删除循环（约第 145-155 行）中，替换动作内容。**移除**两个 `mouth_perpendicular_to_ground` 块（约 176-183）和两个 `ground_pick_return_pose_*` 块（约 189-212），并将 `mouth_ground_proximity` 的权重调回 `weight=1.0`（约 163-172，将 `weight=2.0` → `weight=1.0`）。
 
-Concrètement :
-- Éditer le bloc `cfg.rewards["mouth_ground_proximity"]` : `weight=2.0` → `weight=1.0`.
-- Supprimer entièrement le bloc `cfg.rewards["mouth_perpendicular_to_ground"] = RewardTermCfg(...)`.
-- Supprimer les blocs `_LEG_JOINTS = [...]` / `cfg.rewards["ground_pick_return_pose_legs"]` et `_NECK_JOINTS = [...]` / `cfg.rewards["ground_pick_return_pose_neck"]`.
-- Retirer `"pose"` de la liste de suppression de rewards si présent (inchangé) — mais **retirer** aussi la ligne de commentaire `# replaced by phase-conditioned ground_pick_return_pose` devenue obsolète (optionnel).
+具体：
+- 编辑 `cfg.rewards["mouth_ground_proximity"]` 块：`weight=2.0` → `weight=1.0`。
+- 完整删除 `cfg.rewards["mouth_perpendicular_to_ground"] = RewardTermCfg(...)` 块。
+- 删除 `_LEG_JOINTS = [...]` / `cfg.rewards["ground_pick_return_pose_legs"]` 与 `_NECK_JOINTS = [...]` / `cfg.rewards["ground_pick_return_pose_neck"]` 块。
+- 如果存在则从删除列表中移除 `"pose"`（不变）— 但也可**移除**已过时的注释行 `# replaced by phase-conditioned ground_pick_return_pose`（可选）。
 
-(c) Ajouter les deux nouveaux rewards de suivi de pose (à la place des blocs retirés, dans la section « main ground pick objectives ») :
+(c) 添加两个新的姿态跟踪奖励（放在被移除块的位置，位于 "main ground pick objectives" 节中）：
 
 ```python
     # Suivi de pose interpolée par la phase (STAND<->DOWN<->STAND). Directif et
@@ -521,15 +521,15 @@ Concrètement :
     )
 ```
 
-(d) Dans le bloc « Command » (~ligne 368), passer la période et désactiver la randomisation de phase :
+(d) 在 "Command" 块（约第 368 行）中，设置周期并禁用相位随机化：
 
-Remplacer :
+替换：
 ```python
     cfg.commands["twist"] = microduck_mdp.GroundPickPhaseCommandCfg(
         **{**vars(command), "class_type": microduck_mdp.GroundPickPhaseCommand}
     )
 ```
-par :
+为：
 ```python
     cfg.commands["twist"] = microduck_mdp.GroundPickPhaseCommandCfg(
         **{
@@ -541,16 +541,16 @@ par :
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **步骤 4：运行测试以确认通过**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
-Expected: PASS (2 passed).
+运行：`uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
+预期：PASS（2 passed）。
 
-Puis vérifier que l'ensemble de la suite passe :
-Run: `uv run --with pytest pytest tests/ -q`
-Expected: PASS (tous).
+然后验证整个测试套件通过：
+运行：`uv run --with pytest pytest tests/ -q`
+预期：PASS（全部）。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```bash
 git add tests/test_ground_pick_cfg.py src/mjlab_microduck/tasks/microduck_ground_pick_env_cfg.py
@@ -559,17 +559,17 @@ git commit -m "feat(ground_pick): suivi de pose interpolée par la phase (STAND-
 
 ---
 
-### Task 5: Vérification de bout en bout (construction runtime de la tâche)
+### 任务 5：端到端验证（任务运行时构建）
 
-**Files:**
-- Test: `tests/test_ground_pick_cfg.py` (append)
+**文件：**
+- 测试：`tests/test_ground_pick_cfg.py`（追加）
 
-**Interfaces:**
-- Consumes: tout ce qui précède.
+**接口：**
+- 消费：以上所有内容。
 
-- [ ] **Step 1: Write the failing/uncovered test**
+- [ ] **步骤 1：编写失败/未覆盖测试**
 
-Ajouter à `tests/test_ground_pick_cfg.py` :
+向 `tests/test_ground_pick_cfg.py` 添加：
 
 ```python
 def test_ground_pick_rough_variant_builds():
@@ -582,17 +582,17 @@ def test_ground_pick_play_variant_builds():
     assert cfg.commands["twist"].randomize_phase is False
 ```
 
-- [ ] **Step 2: Run to verify**
+- [ ] **步骤 2：运行以验证**
 
-Run: `uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
-Expected: PASS.
+运行：`uv run --with pytest pytest tests/test_ground_pick_cfg.py -q`
+预期：PASS。
 
-- [ ] **Step 3: Vérifier l'enregistrement de la tâche (import du package)**
+- [ ] **步骤 3：验证任务注册（包导入）**
 
-Run: `uv run python -c "import mjlab_microduck.tasks; print('ok')"`
-Expected: affiche les lignes `✓ ... registered` dont `GroundPick`, puis `ok`, sans exception.
+运行：`uv run python -c "import mjlab_microduck.tasks; print('ok')"`
+预期：打印 `✓ ... registered` 行（含 `GroundPick`），然后 `ok`，无异常。
 
-- [ ] **Step 4: Commit**
+- [ ] **步骤 4：提交**
 
 ```bash
 git add tests/test_ground_pick_cfg.py
@@ -601,18 +601,18 @@ git commit -m "test(ground_pick): variantes rough/play + import du package"
 
 ---
 
-## Self-Review
+## 自审
 
-**1. Spec coverage :**
-- §1 objectif directif par pose → Tasks 1,2,4. ✓
-- §2 poses (STAND=HOME source, DOWN=FOLD par nom) → Task 4 (a), Task 2 (`source_pose=None`→default). ✓
-- §3 profil 4 segments période 4 s + `randomize_phase=False` → Task 1, Task 3, Task 4 (a,d). ✓
-- §4 fonctions mdp `phase_pose_blend/track/_l1` par nom → Tasks 1,2. ✓
-- §5 rewards (ajouts + retraits + retune mouth 1.0) → Task 4 (b,c), test Task 4. ✓
-- §6 déploiement (période 4, kp-ratio 1.0) → documenté dans spec ; period=4 vérifié en test Task 4. ✓
-- §7 tests (fonctions pures + construction env) → Tasks 1,2,4,5. ✓
-- §9 doublon `pose_target_match` hors scope → non modifié (conforme). ✓
+**1. 规格覆盖：**
+- §1 直接姿态目标 → 任务 1、2、4。✓
+- §2 姿态（STAND=HOME 为源，DOWN=FOLD 按名称）→ 任务 4 (a)、任务 2（`source_pose=None`→default）。✓
+- §3 四段相位曲线周期 4 s + `randomize_phase=False` → 任务 1、任务 3、任务 4 (a,d)。✓
+- §4 mdp 函数 `phase_pose_blend/track/_l1` 按名称 → 任务 1、2。✓
+- §5 rewards（新增 + 移除 + mouth 调为 1.0）→ 任务 4 (b,c)，任务 4 测试。✓
+- §6 部署（周期 4、kp-ratio 1.0）→ 规格中已说明；period=4 在任务 4 测试中验证。✓
+- §7 测试（纯函数 + env 构建）→ 任务 1、2、4、5。✓
+- §9 `pose_target_match` 重复项超出范围 → 未修改（符合）。✓
 
-**2. Placeholder scan :** aucun TODO/TBD ; tout le code est fourni. ✓
+**2. 占位符扫描：** 无 TODO/TBD；所有代码均已提供。✓
 
-**3. Type consistency :** `phase_pose_track(target_pose=..., std=..., asset_cfg=...)` et `phase_pose_track_l1(target_pose=..., asset_cfg=...)` identiques entre Task 2 (def), Task 4 (appel) et tests. `randomize_phase` cohérent entre Task 3 (def) et Task 4/tests (usage). `GroundPickPhaseCommand`/`GroundPickPhaseCommandCfg` noms inchangés. ✓
+**3. 类型一致性：** `phase_pose_track(target_pose=..., std=..., asset_cfg=...)` 与 `phase_pose_track_l1(target_pose=..., asset_cfg=...)` 在任务 2（定义）、任务 4（调用）和测试中一致。`randomize_phase` 在任务 3（定义）与任务 4/测试（使用）之间一致。`GroundPickPhaseCommand`/`GroundPickPhaseCommandCfg` 名称不变。✓

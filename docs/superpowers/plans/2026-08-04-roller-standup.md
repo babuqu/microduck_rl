@@ -1,56 +1,56 @@
-# Roller StandUp — Plan d'implémentation
+# Roller StandUp — 实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: 使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 来按任务逐个实现本计划。步骤使用复选框（`- [ ]`）语法进行跟踪。
 
-**Goal:** Une policy dédiée `Mjlab-RollerStandUp-Flat-MicroDuck` qui remet le microduck debout sur ses rollers après une chute (à plat ventre ou à plat dos) et qui sait tenir la station sur roues.
+**目标:** 一个专用 policy `Mjlab-RollerStandUp-Flat-MicroDuck`，让 microduck 在摔倒后（俯卧或仰卧）能在 rollers 上重新站立，并能在轮上保持站姿。
 
-**Architecture:** Un seul fichier d'env nouveau, dérivé de `make_microduck_velocity_rollers_env_cfg()` — il hérite ainsi du robot rollers, des capteurs, de toute la domain randomization et de l'observation 61D (condition dure pour l'interchangeabilité au runtime). On retire les récompenses de patinage, on greffe les dix récompenses de relevé du `standup` (remappées sur les indices de joints du modèle rollers, où les roues passives sont intercalées), on remplace le reset par un départ au sol, et on inverse le curriculum de friction de roulement (roues freinées → libres) pour bootstrapper le geste avant d'imposer la physique réelle des roues.
+**架构:** 新建一个 env 文件，派生自 `make_microduck_velocity_rollers_env_cfg()` —— 它因此继承了 rollers 机器人、传感器、全部 domain randomization 和 61D observation（这是 runtime 互换性的硬性条件）。我们移除滑行相关的 reward，移植 `standup` 的十个起立 reward（重新映射到 rollers 模型的关节索引，因为被动轮是交错排列的），用地面起立替换 reset，并反转滚动摩擦力的 curriculum（制动轮 → 自由轮），以便在施加真实轮子物理之前先 bootstrap 出动作。
 
-**Tech Stack:** Python 3.12, mjlab 1.3.0, MuJoCo / mujoco-warp, rsl_rl (PPO), uv, pytest.
+**技术栈:** Python 3.12、mjlab 1.3.0、MuJoCo / mujoco-warp、rsl_rl (PPO)、uv、pytest。
 
-Spec de référence : `docs/superpowers/specs/2026-08-04-roller-standup-design.md`
+参考规格文档: `docs/superpowers/specs/2026-08-04-roller-standup-design.md`
 
-## Global Constraints
+## 全局约束
 
-- **Aucune modification** de `src/mjlab_microduck/tasks/mdp.py`, ni des envs `roller`, `roller_crouch`, `roller_slope`, `standup`, `velstand`. Toutes les fonctions mdp nécessaires existent déjà.
-- **Parité d'observation 61D obligatoire** avec `make_microduck_velocity_rollers_env_cfg()` : `[gyro(3), projected_gravity(3), joint_pos(14), joint_vel(14), last_action(14), command(13)]`. Les slots `head_pose` (4) et `body_pose` (6) restent **zero-paddés**. Sans cette parité l'ONNX ne se charge pas dans un slot du runtime.
-- **Indices de joints du modèle rollers** (roues passives intercalées ; vérifiés dans MuJoCo) :
-  `_LEG_JOINTS = [0, 1, 2, 3, 4, 11, 12, 13, 14, 15]`, `_NECK_JOINTS = [7, 8, 9, 10]`, `_WHEEL_JOINTS = [5, 6, 16, 17]`.
-  Ne **jamais** réutiliser les indices du `standup` (`[0-4, 9-13]` / `[5-8]`), qui valent pour le modèle sans roues.
-- **Hauteurs mesurées** : `ROLLER_STAND_Z = 0.138`, `ROLLER_PRONE_Z = 0.075`. Ne pas les remplacer par les valeurs du `standup` (0.115 / 0.07).
-- `EPISODE_LENGTH_S = 6.0`, `NUM_STEPS_PER_ENV = 24`. Les `step` des curricula s'expriment en `iters × NUM_STEPS_PER_ENV`.
-- **Symétrie OFF** : `symmetry_cfg=None`. `SYMMETRY_CFG` est câblé pour l'ancien layout 51D et casse sur le 61D.
-- Style du repo : commentaires en français dans les envs roller, indentation 4 espaces, `SceneEntityCfg` **reconstruit à chaque terme** (jamais un objet partagé — mjlab résout et mute ces objets en place).
-- Commits simples, sans `Co-Authored-By`.
-- **Pré-existant, hors périmètre** : `tests/test_wheel_glide.py` a 4 tests en échec avant ce travail (faux asset avec une regex obsolète `passive_LF_?wheel`). Ne pas les corriger, ne pas s'en alarmer. Le reste de la suite passe (46 tests).
+- **不修改** `src/mjlab_microduck/tasks/mdp.py`，也不修改 `roller`、`roller_crouch`、`roller_slope`、`standup`、`velstand` 这些 env。所有必需的 mdp 函数已经存在。
+- **必须与** `make_microduck_velocity_rollers_env_cfg()` **保持 61D observation 一致**: `[gyro(3), projected_gravity(3), joint_pos(14), joint_vel(14), last_action(14), command(13)]`。`head_pose`（4）和 `body_pose`（6）槽位保持 **zero-pad**。没有这一致性，ONNX 无法加载到 runtime 的槽位中。
+- **rollers 模型的关节索引**（被动轮交错排列；已在 MuJoCo 中验证）：
+  `_LEG_JOINTS = [0, 1, 2, 3, 4, 11, 12, 13, 14, 15]`、`_NECK_JOINTS = [7, 8, 9, 10]`、`_WHEEL_JOINTS = [5, 6, 16, 17]`。
+  **绝不要**复用 `standup` 的索引（`[0-4, 9-13]` / `[5-8]`），那些只适用于无轮模型。
+- **测量所得高度**: `ROLLER_STAND_Z = 0.138`、`ROLLER_PRONE_Z = 0.075`。不要用 `standup` 的值（0.115 / 0.07）替换。
+- `EPISODE_LENGTH_S = 6.0`、`NUM_STEPS_PER_ENV = 24`。curriculum 的 `step` 以 `iters × NUM_STEPS_PER_ENV` 表示。
+- **对称性 OFF**: `symmetry_cfg=None`。`SYMMETRY_CFG` 是为旧的 51D layout 编写的，在 61D 上会出错。
+- 仓库风格: roller env 中注释用法语，缩进为 4 个空格，`SceneEntityCfg` **每个 reward term 都重建一个新对象**（绝不共享对象 —— mjlab 会就地解析并修改这些对象）。
+- 简洁的 commit，不带 `Co-Authored-By`。
+- **已存在、超出范围**: `tests/test_wheel_glide.py` 在本工作之前已有 4 个失败测试（虚假 asset 使用了过时的 regex `passive_LF_?wheel`）。不要修复它们，也不必担心。其余测试套件通过（46 个测试）。
 
 ---
 
-## Structure des fichiers
+## 文件结构
 
-| Fichier | Responsabilité |
+| 文件 | 职责 |
 |---|---|
-| `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py` (créer) | Toute la config de l'env + `MicroduckRollerStandUpRlCfg`. Un seul fichier, comme tous les autres envs du repo. |
-| `src/mjlab_microduck/tasks/__init__.py` (modifier) | Import + `register_mjlab_task` de la nouvelle tâche. |
-| `tests/test_roller_standup_cfg.py` (créer) | Tests de construction de config + verrou des indices de joints. Pas de sim, pas de GPU (comme `test_roller_slope_cfg.py`). |
-| `docs/roller_standup_policy_summary.md` (créer, Task 5) | Résumé de passation, sur le modèle de `docs/roller_slope_policy_summary.md`. |
+| `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`（新建） | 全部 env 配置 + `MicroduckRollerStandUpRlCfg`。单文件，与仓库中其他 env 一致。 |
+| `src/mjlab_microduck/tasks/__init__.py`（修改） | 新任务的 import + `register_mjlab_task`。 |
+| `tests/test_roller_standup_cfg.py`（新建） | 配置构造测试 + 关节索引锁。无 sim、无 GPU（与 `test_roller_slope_cfg.py` 相同）。 |
+| `docs/roller_standup_policy_summary.md`（新建，Task 5） | 交接摘要，参照 `docs/roller_slope_policy_summary.md`。 |
 
 ---
 
-## Task 1 : Squelette de l'env — dérivation, commande neutralisée, patinage retiré, enregistrement
+## Task 1：env 骨架 —— 派生、neutralise 命令、移除滑行 reward、注册
 
-**Files:**
-- Create: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
-- Modify: `src/mjlab_microduck/tasks/__init__.py`
-- Test: `tests/test_roller_standup_cfg.py`
+**文件:**
+- 新建: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
+- 修改: `src/mjlab_microduck/tasks/__init__.py`
+- 测试: `tests/test_roller_standup_cfg.py`
 
-**Interfaces:**
-- Consumes: `make_microduck_velocity_rollers_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg` (existant), `microduck_mdp.VelocityCommandCommandOnlyCfg` (existant).
-- Produces: `make_microduck_roller_standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg` ; `MicroduckRollerStandUpRlCfg: RslRlOnPolicyRunnerCfg` ; les constantes de module `ROLLER_STAND_Z: float`, `ROLLER_PRONE_Z: float`, `EPISODE_LENGTH_S: float`, `NUM_STEPS_PER_ENV: int`, `_LEG_JOINTS: list[int]`, `_NECK_JOINTS: list[int]`, `_WHEEL_JOINTS: list[int]` ; la tâche enregistrée `"Mjlab-RollerStandUp-Flat-MicroDuck"`.
+**接口:**
+- 消费: `make_microduck_velocity_rollers_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg`（已存在）、`microduck_mdp.VelocityCommandCommandOnlyCfg`（已存在）。
+- 产出: `make_microduck_roller_standup_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg`；`MicroduckRollerStandUpRlCfg: RslRlOnPolicyRunnerCfg`；模块常量 `ROLLER_STAND_Z: float`、`ROLLER_PRONE_Z: float`、`EPISODE_LENGTH_S: float`、`NUM_STEPS_PER_ENV: int`、`_LEG_JOINTS: list[int]`、`_NECK_JOINTS: list[int]`、`_WHEEL_JOINTS: list[int]`；已注册任务 `"Mjlab-RollerStandUp-Flat-MicroDuck"`。
 
-- [ ] **Step 1 : Écrire les tests qui échouent**
+- [ ] **Step 1: 编写失败测试**
 
-Créer `tests/test_roller_standup_cfg.py` :
+创建 `tests/test_roller_standup_cfg.py`:
 
 ```python
 from mjlab_microduck.tasks.microduck_roller_standup_env_cfg import (
@@ -172,16 +172,16 @@ def test_task_is_registered():
     assert "Mjlab-RollerStandUp-Flat-MicroDuck" in list_tasks()
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 2: 运行测试确认它们失败**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : erreur de collecte, `ModuleNotFoundError: No module named 'mjlab_microduck.tasks.microduck_roller_standup_env_cfg'`.
+预期: collect 错误，`ModuleNotFoundError: No module named 'mjlab_microduck.tasks.microduck_roller_standup_env_cfg'`。
 
-- [ ] **Step 3 : Créer le fichier d'env**
+- [ ] **Step 3: 创建 env 文件**
 
-Créer `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py` :
+创建 `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`:
 
 ```python
 """Microduck roller standup — se relever sur rollers.
@@ -366,9 +366,9 @@ MicroduckRollerStandUpRlCfg = RslRlOnPolicyRunnerCfg(
 )
 ```
 
-- [ ] **Step 4 : Enregistrer la tâche**
+- [ ] **Step 4: 注册任务**
 
-Dans `src/mjlab_microduck/tasks/__init__.py`, ajouter l'import **après** le bloc d'import de `microduck_roller_slope_env_cfg` :
+在 `src/mjlab_microduck/tasks/__init__.py` 中，**在** `microduck_roller_slope_env_cfg` 的 import 块**之后**添加:
 
 ```python
 from .microduck_roller_standup_env_cfg import (
@@ -377,7 +377,7 @@ from .microduck_roller_standup_env_cfg import (
 )
 ```
 
-Puis, tout à la fin du fichier (après l'enregistrement de `Mjlab-RollerSlope-Flat-MicroDuck`) :
+然后，在文件最末尾（在 `Mjlab-RollerSlope-Flat-MicroDuck` 注册之后）:
 
 ```python
 # Roller STANDUP — se relever sur rollers (policy dédiée, départ au sol).
@@ -391,23 +391,23 @@ register_mjlab_task(
 print("✓ RollerStandUp task registered: Mjlab-RollerStandUp-Flat-MicroDuck")
 ```
 
-- [ ] **Step 5 : Lancer les tests pour vérifier qu'ils passent**
+- [ ] **Step 5: 运行测试确认它们通过**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : 10 passed.
+预期: 10 passed。
 
-Si `test_obs_parity_with_roller_env` échoue, c'est que quelque chose a touché aux observations — le corriger avant de continuer, c'est la contrainte dure du projet.
+如果 `test_obs_parity_with_roller_env` 失败，说明有人动了 observation —— 在继续之前先修复它，这是项目的硬性约束。
 
-- [ ] **Step 6 : Vérifier qu'aucun autre test ne régresse**
+- [ ] **Step 6: 确认其他测试不回归**
 
 ```bash
 uv run --with pytest pytest tests/ -q
 ```
-Attendu : `4 failed, 56 passed` — les 4 échecs sont ceux, pré-existants, de `tests/test_wheel_glide.py` (la suite était à `4 failed, 46 passed` avant ce travail). Aucun autre échec.
+预期: `4 failed, 56 passed` —— 4 个失败是 `tests/test_wheel_glide.py` 中预先存在的（本工作之前套件为 `4 failed, 46 passed`）。无其他失败。
 
-- [ ] **Step 7 : Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py \
@@ -418,19 +418,19 @@ git commit -m "roller-standup: squelette de l'env (dérivé roller, twist neutra
 
 ---
 
-## Task 2 : Récompenses de relevé + verrou des indices de joints
+## Task 2: 起立 reward + 关节索引锁
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
-- Test: `tests/test_roller_standup_cfg.py`
+**文件:**
+- 修改: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
+- 测试: `tests/test_roller_standup_cfg.py`
 
-**Interfaces:**
-- Consumes: de la Task 1 — `make_microduck_roller_standup_env_cfg`, `ROLLER_STAND_Z`, `ROLLER_PRONE_Z`, `_LEG_JOINTS`, `_NECK_JOINTS`, `_WHEEL_JOINTS`. De `mdp.py` (existant, non modifié) : `pose_target_match(target_overrides, asset_cfg, std, joint_indices)`, `pose_l1_penalty(target_overrides, asset_cfg, joint_indices)`, `height_target_gaussian(target_height, asset_cfg, std)`, `height_l1_penalty(target_height, asset_cfg)`, `com_upward_velocity(asset_cfg, max_height)`, `trunk_vertical_accel_penalty(asset_cfg)`, `body_upright_linear(asset_cfg)`, `upright_gaussian_at_height(std, height_low, height_high, asset_cfg)`, `standing_composite_score(target_height, height_std, upright_std, pose_std, joint_indices, target_overrides, asset_cfg)`, `joint_torque_rate_l2()`.
-- Produces: les termes de récompense `pose_stand_legs`, `pose_stand_l1`, `height_stand`, `height_stand_sharp`, `height_stand_l1`, `com_upward_velocity`, `gentle_rise`, `upright_linear`, `upright_sharp`, `standing_composite`, `joint_torque_rate_l2` dans `cfg.rewards`.
+**接口:**
+- 消费: 来自 Task 1 —— `make_microduck_roller_standup_env_cfg`、`ROLLER_STAND_Z`、`ROLLER_PRONE_Z`、`_LEG_JOINTS`、`_NECK_JOINTS`、`_WHEEL_JOINTS`。来自 `mdp.py`（已存在、未修改）: `pose_target_match(target_overrides, asset_cfg, std, joint_indices)`、`pose_l1_penalty(target_overrides, asset_cfg, joint_indices)`、`height_target_gaussian(target_height, asset_cfg, std)`、`height_l1_penalty(target_height, asset_cfg)`、`com_upward_velocity(asset_cfg, max_height)`、`trunk_vertical_accel_penalty(asset_cfg)`、`body_upright_linear(asset_cfg)`、`upright_gaussian_at_height(std, height_low, height_high, asset_cfg)`、`standing_composite_score(target_height, height_std, upright_std, pose_std, joint_indices, target_overrides, asset_cfg)`、`joint_torque_rate_l2()`。
+- 产出: reward term `pose_stand_legs`、`pose_stand_l1`、`height_stand`、`height_stand_sharp`、`height_stand_l1`、`com_upward_velocity`、`gentle_rise`、`upright_linear`、`upright_sharp`、`standing_composite`、`joint_torque_rate_l2`，位于 `cfg.rewards`。
 
-- [ ] **Step 1 : Écrire les tests qui échouent**
+- [ ] **Step 1: 编写失败测试**
 
-Ajouter à la fin de `tests/test_roller_standup_cfg.py` :
+在 `tests/test_roller_standup_cfg.py` 末尾添加:
 
 ```python
 def test_joint_indices_match_actual_roller_model():
@@ -533,16 +533,16 @@ def test_trunk_asset_cfgs_are_distinct_objects():
     assert len(set(seen)) == len(seen), "asset_cfg partagé entre plusieurs termes"
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 2: 运行测试确认它们失败**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : `test_joint_indices_match_actual_roller_model` **passe** (les constantes de la Task 1 sont déjà correctes — c'est un verrou de régression, pas un test rouge) ; les 4 autres échouent avec `KeyError: 'pose_stand_legs'` ou `assert 'pose_stand_legs' in cfg.rewards`.
+预期: `test_joint_indices_match_actual_roller_model` **通过**（Task 1 的常量已经正确 —— 这是一个回归锁，不是红测试）；其他 4 个失败，出现 `KeyError: 'pose_stand_legs'` 或 `assert 'pose_stand_legs' in cfg.rewards`。
 
-- [ ] **Step 3 : Ajouter les récompenses de relevé**
+- [ ] **Step 3: 添加起立 reward**
 
-Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** le bloc « Robustesse numérique » et **avant** le `return cfg` :
+在 `microduck_roller_standup_env_cfg.py` 中，**在** "Robustesse numérique" 块**之后**、`return cfg` **之前**插入以下代码:
 
 ```python
     # ── Récompenses de relevé — transplant du standup, remappé ───────────────
@@ -674,14 +674,14 @@ Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** le bloc 
     )
 ```
 
-- [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
+- [ ] **Step 4: 运行测试确认它们通过**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : 15 passed.
+预期: 15 passed。
 
-- [ ] **Step 5 : Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py \
@@ -691,19 +691,19 @@ git commit -m "roller-standup: recompenses de relevé + verrou des indices de jo
 
 ---
 
-## Task 3 : Départ au sol — reset, suppression de `fell_over`, curriculum des poses
+## Task 3: 地面起立 —— reset、移除 `fell_over`、起立姿势 curriculum
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
-- Test: `tests/test_roller_standup_cfg.py`
+**文件:**
+- 修改: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
+- 测试: `tests/test_roller_standup_cfg.py`
 
-**Interfaces:**
-- Consumes: `microduck_mdp.set_random_ground_state(env, env_ids, asset_cfg, face_down_prob, face_up_prob, sitting_prob, standing_prob, prone_z_min, prone_z_max, sitting_z_min, sitting_z_max, standing_z_min, standing_z_max, sitting_joint_overrides, sitting_joint_noise_std, sitting_tilt_max)` et `microduck_mdp.event_param_curriculum(env, env_ids, event_name, param_stages)` — existants, non modifiés.
-- Produces: l'événement `cfg.events["set_ground_state"]` et le curriculum `cfg.curriculum["ground_state_mix"]` ; `cfg.terminations` sans `fell_over`.
+**接口:**
+- 消费: `microduck_mdp.set_random_ground_state(env, env_ids, asset_cfg, face_down_prob, face_up_prob, sitting_prob, standing_prob, prone_z_min, prone_z_max, sitting_z_min, sitting_z_max, standing_z_min, standing_z_max, sitting_joint_overrides, sitting_joint_noise_std, sitting_tilt_max)` 与 `microduck_mdp.event_param_curriculum(env, env_ids, event_name, param_stages)` —— 已存在、未修改。
+- 产出: event `cfg.events["set_ground_state"]` 和 curriculum `cfg.curriculum["ground_state_mix"]`；`cfg.terminations` 不含 `fell_over`。
 
-- [ ] **Step 1 : Écrire les tests qui échouent**
+- [ ] **Step 1: 编写失败测试**
 
-Ajouter à la fin de `tests/test_roller_standup_cfg.py` :
+在 `tests/test_roller_standup_cfg.py` 末尾添加:
 
 ```python
 def test_starts_from_ground_states():
@@ -777,16 +777,16 @@ def test_ground_state_curriculum_ramps_easy_to_hard():
         assert p["standing_prob"] > 0.0
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 2: 运行测试确认它们失败**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : les 5 nouveaux échouent — `assert 'set_ground_state' in cfg.events` (KeyError / AssertionError), `assert 'fell_over' not in cfg.terminations`, `assert 'ground_state_mix' in cfg.curriculum`.
+预期: 5 个新测试失败 —— `assert 'set_ground_state' in cfg.events`（KeyError / AssertionError）、`assert 'fell_over' not in cfg.terminations`、`assert 'ground_state_mix' in cfg.curriculum`。
 
-- [ ] **Step 3 : Ajouter le reset au sol, la suppression de `fell_over` et le curriculum**
+- [ ] **Step 3: 添加地面 reset、移除 `fell_over` 和 curriculum**
 
-Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** les récompenses de relevé et **avant** le `return cfg` :
+在 `microduck_roller_standup_env_cfg.py` 中，**在**起立 reward **之后**、`return cfg` **之前**插入以下代码:
 
 ```python
     # ── Départ AU SOL : à plat ventre / à plat dos / déjà debout ─────────────
@@ -854,14 +854,14 @@ Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** les réc
     )
 ```
 
-- [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
+- [ ] **Step 4: 运行测试确认它们通过**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : 20 passed.
+预期: 20 passed。
 
-- [ ] **Step 5 : Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py \
@@ -871,19 +871,19 @@ git commit -m "roller-standup: depart au sol (ventre/dos/debout) + curriculum de
 
 ---
 
-## Task 4 : Curricula — friction de roulement inversée, poussées, action_rate
+## Task 4: curriculum —— 反向滚动摩擦力、push、action_rate
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
-- Test: `tests/test_roller_standup_cfg.py`
+**文件:**
+- 修改: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
+- 测试: `tests/test_roller_standup_cfg.py`
 
-**Interfaces:**
-- Consumes: `microduck_mdp.wheel_friction_curriculum(env, env_ids, event_name, ranges_stages)`, `microduck_mdp.push_curriculum(env, env_ids, event_name, push_stages)`, `microduck_mdp.reward_weight(env, env_ids, reward_name, weight_stages)` — existants, non modifiés. Événements hérités de l'env roller : `randomize_wheel_friction`, `push_robot`.
-- Produces: `cfg.curriculum["wheel_friction"]` (décroissant), `cfg.curriculum["push_magnitude"]`, `cfg.curriculum["action_rate_weight"]` (remplacé).
+**接口:**
+- 消费: `microduck_mdp.wheel_friction_curriculum(env, env_ids, event_name, ranges_stages)`、`microduck_mdp.push_curriculum(env, env_ids, event_name, push_stages)`、`microduck_mdp.reward_weight(env, env_ids, reward_name, weight_stages)` —— 已存在、未修改。从 roller env 继承的 event: `randomize_wheel_friction`、`push_robot`。
+- 产出: `cfg.curriculum["wheel_friction"]`（递减）、`cfg.curriculum["push_magnitude"]`、`cfg.curriculum["action_rate_weight"]`（替换）。
 
-- [ ] **Step 1 : Écrire les tests qui échouent**
+- [ ] **Step 1: 编写失败测试**
 
-Ajouter à la fin de `tests/test_roller_standup_cfg.py` :
+在 `tests/test_roller_standup_cfg.py` 末尾添加:
 
 ```python
 def test_wheel_friction_curriculum_is_decreasing():
@@ -961,16 +961,16 @@ def test_inherited_dr_curricula_survive():
         assert name in cfg.events, f"événement de DR perdu : {name}"
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 2: 运行测试确认它们失败**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : `test_wheel_friction_curriculum_is_decreasing` échoue sur `assert lows == sorted(lows, reverse=True)` (l'env roller monte 0 → 0.0015), `test_wheel_friction_event_starts_at_stage_zero` échoue, `test_action_rate_ramp_is_the_standup_one_not_the_roller_one` échoue sur `[-1.0, -1.5, -2.0] != [-0.4, -0.8, -1.0]`, `test_push_curriculum_ramps_from_zero` échoue sur `KeyError: 'push_magnitude'`. `test_inherited_dr_curricula_survive` passe déjà (vérification de non-régression).
+预期: `test_wheel_friction_curriculum_is_decreasing` 在 `assert lows == sorted(lows, reverse=True)` 处失败（roller env 是 0 → 0.0015 递增），`test_wheel_friction_event_starts_at_stage_zero` 失败，`test_action_rate_ramp_is_the_standup_one_not_the_roller_one` 在 `[-1.0, -1.5, -2.0] != [-0.4, -0.8, -1.0]` 处失败，`test_push_curriculum_ramps_from_zero` 在 `KeyError: 'push_magnitude'` 处失败。`test_inherited_dr_curricula_survive` 已经通过（非回归验证）。
 
-- [ ] **Step 3 : Remplacer les curricula**
+- [ ] **Step 3: 替换 curriculum**
 
-Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** le curriculum `ground_state_mix` et **avant** le `return cfg` :
+在 `microduck_roller_standup_env_cfg.py` 中，**在** `ground_state_mix` curriculum **之后**、`return cfg` **之前**插入以下代码:
 
 ```python
     # ── Friction de roulement INVERSÉE : freinées → libres ───────────────────
@@ -1047,21 +1047,21 @@ Dans `microduck_roller_standup_env_cfg.py`, insérer ce bloc **après** le curri
     )
 ```
 
-- [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
+- [ ] **Step 4: 运行测试确认它们通过**
 
 ```bash
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
-Attendu : 25 passed.
+预期: 25 passed。
 
-- [ ] **Step 5 : Vérifier qu'aucun autre test ne régresse**
+- [ ] **Step 5: 确认其他测试不回归**
 
 ```bash
 uv run --with pytest pytest tests/ -q
 ```
-Attendu : `4 failed, 71 passed` — uniquement les 4 échecs pré-existants de `tests/test_wheel_glide.py`.
+预期: `4 failed, 71 passed` —— 只有 `tests/test_wheel_glide.py` 中预先存在的 4 个失败。
 
-- [ ] **Step 6 : Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py \
@@ -1071,19 +1071,19 @@ git commit -m "roller-standup: curriculum de friction de roulement inverse + pou
 
 ---
 
-## Task 5 : Vérification bout-en-bout sur GPU + doc de passation
+## Task 5: GPU 端到端验证 + 交接文档
 
-Les tests des Tasks 1–4 sont **statiques** : ils vérifient la config, pas l'exécution. Ils ne peuvent pas attraper un `joint_indices` hors bornes, un nom de paramètre erroné passé à une fonction mdp, ou un capteur manquant. Cette tâche est le seul endroit où l'env tourne réellement.
+Task 1–4 的测试是**静态的**: 它们验证配置，不验证运行。它们无法捕获越界的 `joint_indices`、传给 mdp 函数的错误参数名、或缺失的传感器。本任务是 env 真正运行的唯一地方。
 
-**Files:**
-- Create: `docs/roller_standup_policy_summary.md`
-- (aucune modification de code attendue si tout passe)
+**文件:**
+- 新建: `docs/roller_standup_policy_summary.md`
+- （如果一切通过，无需代码改动）
 
-**Interfaces:**
-- Consumes: la tâche enregistrée `Mjlab-RollerStandUp-Flat-MicroDuck` (Task 1) et l'env complet (Tasks 2–4).
-- Produces: rien de programmatique — un doc de passation et la confirmation que l'env tourne.
+**接口:**
+- 消费: 已注册任务 `Mjlab-RollerStandUp-Flat-MicroDuck`（Task 1）和完整 env（Task 2–4）。
+- 产出: 无程序化产出 —— 一份交接文档和 env 能运行的确认。
 
-- [ ] **Step 1 : Lancer un entraînement très court**
+- [ ] **Step 1: 启动一次极短训练**
 
 ```bash
 uv run train Mjlab-RollerStandUp-Flat-MicroDuck \
@@ -1092,114 +1092,114 @@ uv run train Mjlab-RollerStandUp-Flat-MicroDuck \
   --agent.logger tensorboard
 ```
 
-`--agent.logger tensorboard` évite de polluer wandb avec un run jetable.
+`--agent.logger tensorboard` 避免用一次性 run 污染 wandb。
 
-Attendu : `✓ RollerStandUp task registered: Mjlab-RollerStandUp-Flat-MicroDuck`, puis 3 itérations qui s'exécutent sans exception, avec un tableau de récompenses affichant les termes `pose_stand_legs`, `height_stand`, `standing_composite`, etc.
+预期: `✓ RollerStandUp task registered: Mjlab-RollerStandUp-Flat-MicroDuck`，然后 3 个 iteration 无异常地执行，reward 表显示 `pose_stand_legs`、`height_stand`、`standing_composite` 等 term。
 
-Erreurs plausibles et leur cause :
-- `IndexError` sur `joint_pos[:, joint_indices]` → les indices de `_LEG_JOINTS` dépassent le nombre de joints ; relire Task 2.
-- `TypeError: ... unexpected keyword argument` → un nom de paramètre ne correspond pas à la signature de la fonction mdp ; comparer avec le bloc **Interfaces** de la Task 2.
-- `KeyError` sur un nom de capteur → une récompense retirée était la seule à utiliser un capteur, ou une récompense gardée en réclame un absent.
+可能的错误及其原因:
+- `IndexError` on `joint_pos[:, joint_indices]` → `_LEG_JOINTS` 的索引超出关节数；重读 Task 2。
+- `TypeError: ... unexpected keyword argument` → 参数名与 mdp 函数签名不匹配；与 Task 2 的 **接口** 块对比。
+- `KeyError` on 传感器名 → 被移除的 reward 是唯一使用某传感器的，或保留的 reward 需要一个缺失的传感器。
 
-- [ ] **Step 2 : Vérifier que les récompenses de relevé ne sont pas toutes nulles**
+- [ ] **Step 2: 确认起立 reward 不是全为零**
 
-Dans la sortie de l'étape précédente, vérifier que `Episode_Reward/standing_composite` et `Episode_Reward/height_stand` sont **non nuls**. Une valeur exactement 0.0 sur les trois itérations signale une récompense qui ne se déclenche jamais (mauvais `asset_cfg`, mauvaise hauteur cible).
+在上一步输出中，确认 `Episode_Reward/standing_composite` 和 `Episode_Reward/height_stand` **非零**。在三个 iteration 上精确为 0.0 表示一个 reward 从未触发（错误的 `asset_cfg`、错误的目标高度）。
 
-- [ ] **Step 3 : Vérifier visuellement le départ au sol**
+- [ ] **Step 3: 可视化确认地面起立**
 
 ```bash
 uv run play Mjlab-RollerStandUp-Flat-MicroDuck --env.scene.num-envs 16
 ```
 
-Attendu : les robots apparaissent **au sol** (à plat ventre) ou **debout sur leurs roues**, jamais en l'air ni traversant le sol. Aucun robot à plat dos à ce stade — c'est normal, `face_up_prob = 0` au palier 0 du curriculum, et en play le curriculum ne tourne pas.
+预期: 机器人**在地上**（俯卧）或**在轮上站立**出现，绝不在空中或穿过地面。此时不应有仰卧的机器人 —— 这是正常的，curriculum 阶段 0 的 `face_up_prob = 0`，且 play 模式下 curriculum 不运行。
 
-Si des robots tombent de haut, les plages `prone_z` sont mal réglées ; si un robot traverse le sol, la pose de départ le fait spawner sous le plan.
+如果有机器人从高处掉落，`prone_z` 范围设置有误；如果有机器人穿过地面，起立姿势使其在地面以下 spawn。
 
-- [ ] **Step 4 : Écrire le doc de passation**
+- [ ] **Step 4: 编写交接文档**
 
-Créer `docs/roller_standup_policy_summary.md`, sur le modèle de `docs/roller_slope_policy_summary.md` :
+创建 `docs/roller_standup_policy_summary.md`，参照 `docs/roller_slope_policy_summary.md`:
 
 ```markdown
-# Policy `roller_standup` — se relever sur rollers
+# Policy `roller_standup` — 在 rollers 上起立
 
-**But** : le microduck (sur rollers) part du sol — à plat ventre ou à plat dos — et se remet **debout sur ses roues**, puis **tient** la station.
+**目的**: microduck（ rollers 上）从地面 —— 俯卧或仰卧 —— 起，重新**站立到轮上**，然后**保持**站姿。
 
-- **Tâche** : `Mjlab-RollerStandUp-Flat-MicroDuck`
-- **Fichier** : `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
-- **Base** : dérivée de l'env roller (`velocity_rollers`) → même robot, même physique/DR, **même observation 61D** (interchangeable au runtime, chargeable via `--new-cmd-obs`).
-- **Spec** : `docs/superpowers/specs/2026-08-04-roller-standup-design.md`
-- **Politique aveugle** : pas de scan de terrain ; proprioception + `projected_gravity`.
+- **任务**: `Mjlab-RollerStandUp-Flat-MicroDuck`
+- **文件**: `src/mjlab_microduck/tasks/microduck_roller_standup_env_cfg.py`
+- **基础**: 派生自 roller env（`velocity_rollers`）→ 同一机器人、同一物理/DR、**同一 61D observation**（runtime 可互换，可通过 `--new-cmd-obs` 加载）。
+- **规格文档**: `docs/superpowers/specs/2026-08-04-roller-standup-design.md`
+- **盲 policy**: 无 terrain scan；proprioception + `projected_gravity`。
 
-## Hauteurs (mesurées, pas devinées)
+## 高度（测量所得，非猜测）
 
-| pose | modèle pieds | modèle rollers |
+| 姿势 | 足模型 | rollers 模型 |
 |---|---|---|
-| debout | 0.1172 → `STAND_Z=0.115` sous charge | 0.1407 → **`ROLLER_STAND_Z=0.138`** |
-| à plat ventre (repos) | 0.075 | 0.075 |
-| à plat dos (repos) | 0.048 | 0.048 |
+| 站立 | 0.1172 → 负载下 `STAND_Z=0.115` | 0.1407 → **`ROLLER_STAND_Z=0.138`** |
+| 俯卧（休息） | 0.075 | 0.075 |
+| 仰卧（休息） | 0.048 | 0.048 |
 
-Les hauteurs de repos au sol sont identiques aux deux modèles : c'est la coque du tronc qui touche, pas les pieds.
+地面休息高度在两个模型上相同：接触的是躯干外壳，而不是脚。
 
-## ⚠️ Indices de joints — les roues sont INTERCALÉES
+## ⚠️ 关节索引 —— 轮子是交错排列的
 
 ```
-0-4   jambe gauche      5-6   roues gauches
-7-10  cou / tête       11-15  jambe droite      16-17  roues droites
+0-4   左腿      5-6   左轮
+7-10  颈/头     11-15  右腿      16-17  右轮
 ```
-`_LEG_JOINTS = [0-4, 11-15]`. Les indices du `standup` (`[0-4, 9-13]`) valent pour le modèle **sans** roues et pointeraient sur des roues ici. Verrouillé par `tests/test_roller_standup_cfg.py::test_joint_indices_match_actual_roller_model`.
+`_LEG_JOINTS = [0-4, 11-15]`。`standup` 的索引（`[0-4, 9-13]`）适用于**无**轮模型，在此处会指向轮子。由 `tests/test_roller_standup_cfg.py::test_joint_indices_match_actual_roller_model` 锁定。
 
-## Reset — départ au sol
+## Reset —— 地面起立
 
-`set_random_ground_state` : ventre (`prone_z` 0.05–0.09) / dos / **déjà debout** (`standing_z` 0.134–0.144), ± 10° de bruit en pitch/roll. Pas de bucket « assis ». Le bucket « debout » est nécessaire : sans lui la policy monte mais ne tient pas.
+`set_random_ground_state`: 俯卧（`prone_z` 0.05–0.09）/ 仰卧 / **已站立**（`standing_z` 0.134–0.144），± 10° pitch/roll 噪声。无"坐"桶。"站立"桶是必需的：没有它，policy 能起立但无法保持。
 
-**Curriculum `ground_state_mix`** (easy → hard, le dos en dernier) :
+**curriculum `ground_state_mix`**（易 → 难，仰卧在最后）:
 
-| iter | debout | ventre | dos |
+| iter | 站立 | 俯卧 | 仰卧 |
 |---|---|---|---|
 | 0 | 0.50 | 0.50 | 0.00 |
 | 600 | 0.35 | 0.45 | 0.20 |
 | 1500 | 0.25 | 0.40 | 0.35 |
 | 2500 | 0.20 | 0.40 | 0.40 |
 
-## Récompenses
+## reward
 
-Dix termes repris du `standup` avec leurs poids déjà réglés : `pose_stand_legs` (+8), `pose_stand_l1` (+5), `height_stand` (+4, std 0.04), `height_stand_sharp` (+4, std 0.015), `height_stand_l1` (+30), `com_upward_velocity` (+3), `gentle_rise` (−0.02), `upright_linear` (+6), `upright_sharp` (+6), `standing_composite` (+15). Plus `joint_torque_rate_l2` (−2e-3), l'anti-jitter qui n'empêche pas le retournement.
+从 `standup` 移植的十个 term 及其已调好的权重: `pose_stand_legs` (+8)、`pose_stand_l1` (+5)、`height_stand` (+4, std 0.04)、`height_stand_sharp` (+4, std 0.015)、`height_stand_l1` (+30)、`com_upward_velocity` (+3)、`gentle_rise` (−0.02)、`upright_linear` (+6)、`upright_sharp` (+6)、`standing_composite` (+15)。加上 `joint_torque_rate_l2` (−2e-3)，即不阻止翻转的 anti-jitter。
 
-Régularisateurs hérités : `body_ang_vel` **−0.05** (bloqueur de mouvement, à garder LÉGER), `angular_momentum` −0.02, `action_rate_l2` (rampe −0.4 → −1.0, **pas** le −2.0 du roller), `neck_action_rate_l2` −0.5, `neck_joint_pos_l2` −0.5 (tête droite), `joint_torques_l2` −1e-3, `action_over_limit` −0.5, `self_collisions` −1.0.
+继承的 regularizer: `body_ang_vel` **−0.05**（motion-blocker，须保持 LÉGER）、`angular_momentum` −0.02、`action_rate_l2`（ramp −0.4 → −1.0，**不是** roller 的 −2.0）、`neck_action_rate_l2` −0.5、`neck_joint_pos_l2` −0.5（头部直立）、`joint_torques_l2` −1e-3、`action_over_limit` −0.5、`self_collisions` −1.0。
 
-Retirées : toutes les récompenses de patinage, plus `feet_flat` (les lames ne sont pas à plat pendant la montée) et `hip_roll_neutral` (se relever demande d'écarter les jambes).
+移除: 所有滑行 reward，以及 `feet_flat`（起立过程中刀片不是平的）和 `hip_roll_neutral`（起立需要分开腿）。
 
-## ⚠️ Le point dur : les roues roulent
+## ⚠️ 难点: 轮子会滚
 
-Aucune adhérence longitudinale pour pousser sur le sol. Le **curriculum de friction de roulement est INVERSÉ** (l'env roller la fait monter, ici elle descend) :
+没有纵向附着力来推地面。**滚动摩擦力 curriculum 是反向的**（roller env 让它递增，这里让它递减）:
 
 | iter | frictionloss | |
 |---|---|---|
-| 0 | 0.05 | roues quasi bloquées → se relève comme avec des pieds |
+| 0 | 0.05 | 几乎锁死的轮 → 像有脚一样起立 |
 | 1000 | 0.02 | |
 | 2000 | 0.008 | |
 | 3000 | 0.003 | |
-| 4000 | 0.0015 | la vraie valeur du roulement |
+| 4000 | 0.0015 | 真实滚动值 |
 
-**Surveiller `Episode_Reward/standing_composite` aux paliers.** S'il s'écroule, le geste « pieds adhérents » ne transfère pas aux roues libres → il faudra guider une technique de patineur (appui genou intermédiaire, un patin à la fois). C'est un résultat, pas un échec.
+**在各阶段关注 `Episode_Reward/standing_composite`。** 如果它崩塌，"脚附"动作无法迁移到自由轮 → 需要引导一种滑冰者技术（中间膝盖支撑、一次一个刀片）。这是一个结果，不是失败。
 
-**Sim2real** : seuls les checkpoints d'après iter 4000 sont candidats au déploiement. Avant, la policy s'appuie sur une friction qui n'existe pas sur le vrai robot.
+**sim2real**: 只有 iter 4000 之后的 checkpoint 才是部署候选。在此之前，policy 依赖一种在真实机器人上不存在的摩擦力。
 
-## Commande
+## 命令
 
-Slot `twist` neutralisé (± 0.01), slots `head_pose` / `body_pose` **zero-paddés** (convention roller). Déploiement visé : en `--standing` face à la policy roller en `--walking`, avec la bascule automatique sur la magnitude de la commande (`infer_policy.py:262`, seuil 0.05) ; le slot twist y est laissé à zéro (`infer_policy.py:239`).
+`twist` 槽 neutralise（± 0.01），`head_pose` / `body_pose` 槽 **zero-pad**（roller 惯例）。目标部署: 以 `--standing` 对应 roller policy 的 `--walking`，通过速度命令 magnitude 自动切换（`infer_policy.py:262`，阈值 0.05）；twist 槽在那里保持为零（`infer_policy.py:239`）。
 
-**Réserve** : `infer_policy.py` est le script de sim/clavier local. Le runtime robot est le binaire Rust `microduck_runtime`, absent du repo — il n'est pas vérifié qu'il expose un équivalent `--standing`. Le doc de passation du crouch ne liste que `--model`, `--ground-pick`, `--fold-policy`. À confirmer.
+**保留**: `infer_policy.py` 是本地 sim/键盘脚本。机器人 runtime 是 Rust 二进制 `microduck_runtime`，不在仓库中 —— 无法确认它是否暴露等价的 `--standing`。crouch 的交接文档只列出 `--model`、`--ground-pick`、`--fold-policy`。待确认。
 
-## Terminaisons
+## 终止
 
-`fell_over` **supprimée** (le robot démarre tombé). `nan_state` héritée. `nan_policy="sanitize"` sur les obs actor/critic.
+`fell_over` **已移除**（机器人起立时已摔倒）。继承的 `nan_state`。actor/critic obs 上的 `nan_policy="sanitize"`。
 
-## Réseau / PPO
+## 网络 / PPO
 
-Actor et critic `(512, 256, 128)` elu, `obs_normalization=True`. PPO `lr=1e-3` adaptive, `desired_kl=0.01`, `gamma=0.99`, `lam=0.95`, `num_steps_per_env=24`, épisode 6 s, `max_iterations=15000`. **Symétrie OFF** (`SYMMETRY_CFG` est câblé pour le layout 51D).
+Actor 和 critic `(512, 256, 128)` elu，`obs_normalization=True`。PPO `lr=1e-3` adaptive，`desired_kl=0.01`，`gamma=0.99`，`lam=0.95`，`num_steps_per_env=24`，episode 6 s，`max_iterations=15000`。**对称性 OFF**（`SYMMETRY_CFG` 是为 51D layout 编写的）。
 
-## Commandes
+## 命令
 
 ```bash
 uv run train Mjlab-RollerStandUp-Flat-MicroDuck --env.scene.num-envs 4096 --agent.max_iterations 15000
@@ -1208,12 +1208,12 @@ uv run scripts/export_latest.py      # alias md-export
 uv run --with pytest pytest tests/test_roller_standup_cfg.py -q
 ```
 
-## Hors périmètre
+## 超出范围
 
-Intégrer le relevé dans la policy de roulage (recette `velstand`) ; buckets de départ sur le côté ; variante rough ; pénalités d'impact tronc/tête.
+将起立集成到行走 policy（`velstand` 配方）；侧躺起立桶；rough 变体；躯干/头部冲击惩罚。
 ```
 
-- [ ] **Step 5 : Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add docs/roller_standup_policy_summary.md
@@ -1222,12 +1222,12 @@ git commit -m "roller-standup: doc de passation"
 
 ---
 
-## Après le plan
+## 计划之后
 
-Lancer un vrai entraînement :
+启动一次真正的训练:
 
 ```bash
 uv run train Mjlab-RollerStandUp-Flat-MicroDuck --env.scene.num-envs 4096 --agent.max_iterations 15000
 ```
 
-**Le signal à lire** : `Episode_Reward/standing_composite` doit monter, et surtout **son comportement aux iters 1000 / 2000 / 3000 / 4000** (les paliers de friction de roulement) répond à la question qui a motivé tout ce design — est-ce que se relever sur des roues libres est faisable avec le geste « pieds adhérents », ou faut-il enseigner une technique de patineur ?
+**要读的信号**: `Episode_Reward/standing_composite` 应当上升，尤其**它在 iter 1000 / 2000 / 3000 / 4000（滚动摩擦力各阶段）的行为**回答了激发整个设计的问题 —— 在自由轮上起立，用"脚附"动作可行，还是必须教一种滑冰者技术？

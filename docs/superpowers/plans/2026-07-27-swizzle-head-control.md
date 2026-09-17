@@ -1,40 +1,40 @@
-# Swizzle Head Control Implementation Plan
+# Swizzle 头部控制实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **对于 agentic workers：** 必需的 SUB-SKILL：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现本计划。步骤使用 checkbox (`- [ ]`) 语法进行跟踪。
 
-**Goal:** Add operator head-pose control (Y button) to the swizzle roller task so the policy moves its head to commanded poses while staying balanced.
+**目标：** 向 swizzle roller 任务添加操作员头部姿态控制（Y 按钮），使 policy 在保持平衡的同时将头部移动到命令的姿态。
 
-**Architecture:** Policy-managed head via the observation command (matches the walking `--new-cmd-obs` path). The swizzle env currently zero-pads the `head_command` obs slot; we feed a real `head_pose` command into it, reward `head_pose_tracking`, remove the two reward terms that pull the neck/head to HOME (which would fight the command), and ramp the head in LATE via a curriculum so the already-working swizzle isn't disturbed. Config-only change to one file; requires retraining.
+**架构：** 通过 observation command 实现 policy 管理的头部（与步行 `--new-cmd-obs` 路径一致）。swizzle env 当前对 `head_command` obs slot 做 zero-pad；我们向其中喂入真实的 `head_pose` 命令，奖励 `head_pose_tracking`，移除两个把 neck/head 拉向 HOME 的 reward 项（它们会与命令对抗），并通过 curriculum 在后期 ramp 头部，从而不打扰已经工作的 swizzle。仅对一个文件做 config 修改；需要重新训练。
 
-**Tech Stack:** mjlab / mjlab_microduck task configs (Python), rsl_rl PPO. Reuses machinery already in `microduck_velocity_env_cfg.py` (`UniformPoseCommandCfg`, `head_pose_tracking`, `pose_command_range_curriculum`, `reward_weight`).
+**技术栈：** mjlab / mjlab_microduck task configs (Python)、rsl_rl PPO。复用 `microduck_velocity_env_cfg.py` 中已有的机制（`UniformPoseCommandCfg`、`head_pose_tracking`、`pose_command_range_curriculum`、`reward_weight`）。
 
-## Global Constraints
+## 全局约束
 
-- Only the swizzle task changes: `src/mjlab_microduck/tasks/microduck_velocity_swizzle_env_cfg.py`. The stride, velocity, standup, roller-slope/crouch tasks and `mdp.py` are NOT modified.
-- Keep the 61D obs layout `[twist(3), head(4), body(6)]`: replace the `head_command` slot's contents (zero-pad → real command) but keep `body_command` zero-padded (no body-pose control here).
-- No new mdp functions — all reward/command/curriculum functions already exist in `microduck_mdp`.
-- Runtime unchanged: the `microduck_runtime` Y button already drives the `head_command` obs slot.
+- 仅 swizzle 任务变化：`src/mjlab_microduck/tasks/microduck_velocity_swizzle_env_cfg.py`。stride、velocity、standup、roller-slope/crouch 任务和 `mdp.py` 不修改。
+- 保持 61D obs 布局 `[twist(3), head(4), body(6)]`：替换 `head_command` slot 的内容（zero-pad → 真实命令），但保持 `body_command` zero-padded（此处无 body-pose 控制）。
+- 不新增 mdp 函数 — 所有 reward/command/curriculum 函数已存在于 `microduck_mdp`。
+- Runtime 不变：`microduck_runtime` Y 按钮已经驱动 `head_command` obs slot。
 
 ---
 
-### Task 1: Wire head-pose control into the swizzle env
+### 任务 1：将头部姿态控制接入 swizzle env
 
-**Files:**
-- Modify: `src/mjlab_microduck/tasks/microduck_velocity_swizzle_env_cfg.py`
-- Test: `tests/test_swizzle_head_cfg.py` (create)
+**文件：**
+- 修改：`src/mjlab_microduck/tasks/microduck_velocity_swizzle_env_cfg.py`
+- 测试：`tests/test_swizzle_head_cfg.py`（创建）
 
-**Interfaces:**
-- Consumes (already exist, do not redefine):
-  - `microduck_mdp.UniformPoseCommandCfg(resampling_time_range, ranges)` — head-pose command term.
-  - `mdp.generated_commands` (from `mjlab.tasks.velocity`) — obs func reading a command by name; used as `params={"command_name": "head_pose"}`.
-  - `microduck_mdp.head_pose_tracking` — reward `func`, params `{"command_name": "head_pose", "std": 0.5}`.
-  - `microduck_mdp.reward_weight` — curriculum func, params `{"reward_name", "weight_stages": [{"step","weight"}, ...]}`.
-  - `microduck_mdp.pose_command_range_curriculum` — curriculum func, params `{"command_name", "range_stages": [{"step","ranges"}, ...]}`.
-- Produces: the swizzle env cfg with a `head_pose` command, a real `head_command` obs, a `head_pose_tracking` reward, `neck_joint_pos_l2` removed, the `pose` reward scoped to leg joints, and two head curricula.
+**接口：**
+- 消费（已存在，不要重新定义）：
+  - `microduck_mdp.UniformPoseCommandCfg(resampling_time_range, ranges)` — head-pose 命令项。
+  - `mdp.generated_commands`（来自 `mjlab.tasks.velocity`）— 按名称读取 command 的 obs func；用作 `params={"command_name": "head_pose"}`。
+  - `microduck_mdp.head_pose_tracking` — reward `func`，params `{"command_name": "head_pose", "std": 0.5}`。
+  - `microduck_mdp.reward_weight` — curriculum func，params `{"reward_name", "weight_stages": [{"step","weight"}, ...]}`。
+  - `microduck_mdp.pose_command_range_curriculum` — curriculum func，params `{"command_name", "range_stages": [{"step","ranges"}, ...]}`。
+- 产出：swizzle env cfg，带有 `head_pose` command、真实 `head_command` obs、`head_pose_tracking` reward、移除 `neck_joint_pos_l2`、`pose` reward 限定到腿部关节，以及两个 head curricula。
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **步骤 1：编写失败的测试**
 
-Create `tests/test_swizzle_head_cfg.py`:
+创建 `tests/test_swizzle_head_cfg.py`：
 
 ```python
 from mjlab.tasks.velocity import mdp
@@ -73,14 +73,14 @@ def test_swizzle_head_control_wired():
     assert "head_pose_range" in cfg.curriculum
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **步骤 2：运行测试验证失败**
 
-Run: `MUJOCO_GL=egl uv run pytest tests/test_swizzle_head_cfg.py -v`
-Expected: FAIL (head_pose command / head_pose_tracking reward absent; head_command obs is still `zero_command_padding`).
+运行：`MUJOCO_GL=egl uv run pytest tests/test_swizzle_head_cfg.py -v`
+预期：FAIL（head_pose command / head_pose_tracking reward 缺失；head_command obs 仍是 `zero_command_padding`）。
 
-- [ ] **Step 3: Add imports to the swizzle env cfg**
+- [ ] **步骤 3：向 swizzle env cfg 添加 imports**
 
-In `microduck_velocity_swizzle_env_cfg.py`, extend the imports (currently `from mjlab.managers import CurriculumTermCfg, RewardTermCfg`) to add `ObservationTermCfg`, and import the velocity mdp for `generated_commands`:
+在 `microduck_velocity_swizzle_env_cfg.py` 中，扩展 imports（当前为 `from mjlab.managers import CurriculumTermCfg, RewardTermCfg`）以添加 `ObservationTermCfg`，并导入 velocity mdp 以使用 `generated_commands`：
 
 ```python
 from mjlab.managers import CurriculumTermCfg, ObservationTermCfg, RewardTermCfg
@@ -88,9 +88,9 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity import mdp
 ```
 
-- [ ] **Step 4: Add the head_pose command + real head_command obs + head_pose_tracking reward + neck reconciliation**
+- [ ] **步骤 4：添加 head_pose command + 真实 head_command obs + head_pose_tracking reward + neck 协调**
 
-Inside `make_microduck_velocity_swizzle_env_cfg`, AFTER the existing reward/heading setup and BEFORE `return cfg`, add:
+在 `make_microduck_velocity_swizzle_env_cfg` 内部，在现有 reward/heading 设置之后、`return cfg` 之前添加：
 
 ```python
     # --- Head-pose control (Y button): the policy produces the head pose ---------
@@ -133,9 +133,9 @@ Inside `make_microduck_velocity_swizzle_env_cfg`, AFTER the existing reward/head
     )
 ```
 
-- [ ] **Step 5: Add the late head curricula**
+- [ ] **步骤 5：添加后期 head curricula**
 
-Immediately after the block from Step 4 (still before `return cfg`):
+紧接步骤 4 的块之后（仍在 `return cfg` 之前）：
 
 ```python
     # head_pose_tracking ramps 0 -> 4.0, staying 0 until ~1500 it. (swizzle solid),
@@ -170,17 +170,17 @@ Immediately after the block from Step 4 (still before `return cfg`):
     )
 ```
 
-- [ ] **Step 6: Run the cfg test to verify it passes**
+- [ ] **步骤 6：运行 cfg 测试验证通过**
 
-Run: `MUJOCO_GL=egl uv run pytest tests/test_swizzle_head_cfg.py -v`
-Expected: PASS.
+运行：`MUJOCO_GL=egl uv run pytest tests/test_swizzle_head_cfg.py -v`
+预期：PASS。
 
-- [ ] **Step 7: Smoke test the env end-to-end**
+- [ ] **步骤 7：对 env 进行端到端 smoke test**
 
-Run: `MUJOCO_GL=egl uv run train Mjlab-Velocity-Swizzle-MicroDuck --env.scene.num-envs 16 --agent.max-iterations 2`
-Expected: no error; the reward log lists `head_pose_tracking` and no longer lists `neck_joint_pos_l2`; a `Curriculum/head_pose_tracking_weight` line appears at value 0.0.
+运行：`MUJOCO_GL=egl uv run train Mjlab-Velocity-Swizzle-MicroDuck --env.scene.num-envs 16 --agent.max-iterations 2`
+预期：无错误；reward 日志列出 `head_pose_tracking` 且不再列出 `neck_joint_pos_l2`；出现 `Curriculum/head_pose_tracking_weight` 行，值为 0.0。
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8：Commit**
 
 ```bash
 git add src/mjlab_microduck/tasks/microduck_velocity_swizzle_env_cfg.py tests/test_swizzle_head_cfg.py
@@ -189,16 +189,12 @@ git commit -m "swizzle: add head-pose control (Y button, policy-managed, late cu
 
 ---
 
-## Notes for the full training run (not part of the task)
+## 关于完整训练运行的说明（不属于本任务）
 
-Because the head curriculum only finishes at ~3000 iters, train longer than the
-2500 used before:
+因为 head curriculum 在约 3000 iters 才完成，所以训练时间要比之前使用的 2500 更长：
 
 ```bash
 uv run train Mjlab-Velocity-Swizzle-MicroDuck --env.scene.num-envs 4096 --agent.max-iterations 3500
 ```
 
-Watch: `head_pose_tracking` rises after ~1500 it.; the swizzle fall rate does NOT
-spike when it kicks in. If the head disturbs the swizzle → push the kick-in later /
-widen the range more slowly. If the head doesn't follow → raise the final weight.
-Deploy unchanged (`--roller --new-cmd-obs`, Y button moves the head).
+观察：`head_pose_tracking` 在约 1500 it. 后上升；当它启动时 swizzle 跌倒率不应飙升。如果头部打扰了 swizzle → 推迟启动时间 / 更缓慢地扩大范围。如果头部不跟随 → 提高最终权重。部署不变（`--roller --new-cmd-obs`，Y 按钮移动头部）。
